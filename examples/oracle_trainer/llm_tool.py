@@ -15,6 +15,8 @@ class LLMTool(BaseTool):
         super().__init__(config, tool_schema)
 
         self.model = config["model"]
+        self.max_tokens = config["max_tokens"]
+
         self.provider = config.get("provider") or ("anthropic" if self.model.startswith("claude") else "openai")
 
         if self.provider == "anthropic":
@@ -56,5 +58,15 @@ class LLMTool(BaseTool):
             tool_metrics: The metrics of the tool.
         """
 
-
+        if isinstance(self.client, AsyncAnthropic):
+            message = self.client.messages.create(
+                max_tokens=self.max_tokens,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": parameters['content']
+                    }
+                ],
+                model=self.model
+            )
         return ToolResponse(text="Updated the tool state."), 0.0, {}
