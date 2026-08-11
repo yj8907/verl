@@ -20,9 +20,13 @@ whether the agent should keep iterating. This is the mechanism
 ``ContinualAgentLoop`` uses to let the model retry after incorrect answers.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from uuid import uuid4
+
+from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 
 from verl.utils.reward_score.math_verify import compute_score
 
@@ -41,7 +45,9 @@ class BaseEnvironmentManager:
     """Base class for environment managers.
 
     Lifecycle mirrors ``BaseTool``: ``create`` once per trajectory, ``step`` after
-    each assistant turn, ``release`` when the trajectory ends.
+    each assistant turn, ``release`` when the trajectory ends. ``verify_math`` is a
+    shared capability available to any subclass that needs exact/symbolic answer
+    checking -- it is not an environment on its own.
     """
 
     def __init__(self, config: Optional[dict] = None):
@@ -49,6 +55,10 @@ class BaseEnvironmentManager:
 
     async def create(self, instance_id: Optional[str] = None, **kwargs) -> str:
         return instance_id or str(uuid4())
+
+    def verify_math(self, response_text: str, ground_truth: str) -> float:
+        """Score ``response_text`` against ``ground_truth`` using ``math_verify``."""
+        return compute_score(response_text, ground_truth)
 
     async def step(self, instance_id: str, response_text: str, **kwargs) -> EnvStepResult:
         """Score ``response_text`` and return feedback plus whether the episode is done."""
@@ -58,19 +68,57 @@ class BaseEnvironmentManager:
         pass
 
 
-class MathVerifyEnvironmentManager(BaseEnvironmentManager):
-    """Scores a response against a ground-truth answer with ``math_verify`` and
-    returns retry feedback for the agent to act on next turn."""
+class LLMFeedbackEnvironmentManager(BaseEnvironmentManager):
+    """Environment that checks a response with ``verify_math`` and, when it's
+    wrong, asks a frontier LLM (OpenAI/Anthropic) to generate a hint explaining
+    the mistake -- instead of returning a fixed "incorrect, try again" string."""
 
     def __init__(self, config: Optional[dict] = None):
         super().__init__(config)
+        self.model = self.config.get("model", "claude-3-5-sonnet-20241022")
+        self.max_tokens = self.config.get("max_tokens", 256)
         self.correct_feedback = self.config.get("correct_feedback", "Your answer is correct.")
-        self.incorrect_feedback = self.config.get(
-            "incorrect_feedback", "Your answer is incorrect. Please reconsider and try again."
-        )
+        self.provider = self.config.get("provider") or ("anthropic" if self.model.startswith("claude") else "openai")
 
-    async def step(self, instance_id: str, response_text: str, ground_truth: str = "", **kwargs) -> EnvStepResult:
-        score = compute_score(response_text, ground_truth)
-        done = score == 1.0
-        feedback = self.correct_feedback if done else self.incorrect_feedback
-        return EnvStepResult(feedback=feedback, score=score, done=done, metrics={"env_score": score})
+        if self.provider == "anthropic":
+            api_key = os.environ["ANTHROPIC_API_KEY"]
+            self.client = AsyncAnthropic(api_key=api_key, base_url=self.config.get("base_url"))
+        elif self.provider == "openai":
+            api_key = os.environ["OPENAI_API_KEY"]
+            self.client = AsyncOpenAI(api_key=api_key, base_url=self.config.get("base_url"))
+        else:
+            raise ValueError(f"Unsupported provider '{self.provider}' for model '{self.model}'")
+
+    async def step(
+        self, instance_id: str, response_text: str, ground_truth: str = "", question: str = "", **kwargs
+    ) -> EnvStepResult:
+        score = self.verify_math(response_text, ground_truth)
+        if score == 1.0:
+            return EnvStepResult(feedback=self.correct_feedback, score=score, done=True, metrics={"env_score": score})
+
+        feedback = await self._generate_feedback(question, response_text, ground_truth)
+        return EnvStepResult(feedback=feedback, score=score, done=False, metrics={"env_score": score})
+
+    async def _generate_feedback(self, question: str, response_text: str, ground_truth: str) -> str:
+        prompt_parts = []
+        if question:
+            prompt_parts.append(f"Question: {question}")
+        prompt_parts.append(f"Student's answer:\n{response_text}")
+        prompt_parts.append(f"Correct answer: {ground_truth}")
+        prompt_parts.append("In one or two sentences, point out the likely mistake without revealing the final answer.")
+        prompt = "\n".join(prompt_parts)
+
+        if self.provider == "anthropic":
+            message = await self.client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return message.content[0].text
+        else:
+            completion = await self.client.chat.completions.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return completion.choices[0].message.content
