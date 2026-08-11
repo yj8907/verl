@@ -77,7 +77,7 @@ ROLLOUT=(
     actor_rollout_ref.rollout.n=${rollout_n}
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=True
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${ppo_max_token_len_per_gpu}
-    actor_rollout_ref.rollout.multi_turn.tool_config_path=""
+    actor_rollout_ref.rollout.multi_turn.tool_config_path="examples/tool_config.yaml"
 )
 
 REF=(

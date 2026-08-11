@@ -33,7 +33,7 @@ class LLMTool(BaseTool):
         self._conversations: dict[str, dict[str, Any]] = {}
 
     async def create(
-        self, instance_id: Optional[str] = None, system_prompt: Optional[str] = None, **kwargs
+        self, instance_id: Optional[str] = None, **kwargs
     ) -> tuple[str, ToolResponse]:
         """Create a tool instance.
 
@@ -48,6 +48,7 @@ class LLMTool(BaseTool):
         if instance_id is None:
             instance_id = str(uuid4())
 
+        system_prompt = kwargs.get("create_kwargs", {}).get("system_prompt", "")
         self._conversations[instance_id] = {
             "system_prompt": system_prompt if system_prompt is not None else self.default_system_prompt,
             "messages": [],

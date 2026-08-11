@@ -69,18 +69,18 @@ class ContinualAgentLoop(ToolAgentLoop):
         *args,
         name: Optional[str] = None,
         tools: Optional[ToolListWrap] = None,
-        env_manager_config: Optional[dict] = None,
+        env_config: Optional[dict] = None,
         **kwargs,
     ):
         """Args:
         tools: Tools to use for the tool agent loop.
-        env_manager_config: Config dict forwarded to ``LLMFeedbackEnvironmentManager``
+        env_config: Config dict forwarded to ``LLMFeedbackEnvironmentManager``
             (model, max_tokens, provider, system_prompt, ...). Settable per agent loop
             via ``rollout.agent.agent_loop_config_path``, e.g.::
 
                 - name: continual_agent
                   _target_: verl.experimental.agent_loop.continual_agent_loop.ContinualAgentLoop
-                  env_manager_config:
+                  env_config:
                     model: gpt-4o
                     max_tokens: 300
         name: Cache tag for this loop; also the registry entry's ``name:`` when
@@ -89,7 +89,7 @@ class ContinualAgentLoop(ToolAgentLoop):
         if self._initialized:
             return
         super().__init__(*args, tools=tools, **kwargs)
-        self.env_manager = LLMFeedbackEnvironmentManager(config=env_manager_config)
+        self.env_manager = LLMFeedbackEnvironmentManager(config=self.config.get("env_config", {}))
         self._initialized = True
 
     @rollout_trace_op

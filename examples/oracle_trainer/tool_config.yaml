@@ -1,0 +1,19 @@
+  tools:
+    - class_name: examples.oracle_trainer.llm_tool.LLMTool
+      config:
+        type: native
+        model: claude-sonnet-5
+        max_tokens: 512
+        system_prompt: "You are a terse fact-checker."
+      tool_schema:
+        type: function
+        function:
+          name: ask_llm
+          description: Ask a frontier LLM a question to complete your uncertain reasoning.
+          parameters:
+            type: object
+            properties:
+              content:
+                type: string
+                description: The message to send.
+            required: [content]
