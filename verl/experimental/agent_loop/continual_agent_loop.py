@@ -22,7 +22,7 @@ from verl.experimental.agent_loop.agent_loop import (
     ToolListWrap,
     register,
 )
-from verl.experimental.agent_loop.environment_manager import BaseEnvironmentManager, MathVerifyEnvironmentManager
+from verl.experimental.agent_loop.environment_manager import BaseEnvironmentManager, LLMFeedbackEnvironmentManager
 from verl.experimental.agent_loop.tool_agent_loop import AgentData, ToolAgentLoop
 from verl.utils.rollout_trace import rollout_trace_op
 
@@ -50,10 +50,26 @@ class ContinualAgentLoop(ToolAgentLoop):
         *args,
         tools: Optional[ToolListWrap] = None,
         env_manager: Optional[BaseEnvironmentManager] = None,
+        env_manager_config: Optional[dict] = None,
         **kwargs,
     ):
+        """Args:
+        tools: Tools to use for the tool agent loop.
+        env_manager: Pre-built environment manager instance. Takes precedence over
+            ``env_manager_config`` when both are given.
+        env_manager_config: Config dict forwarded to ``LLMFeedbackEnvironmentManager``
+            (model, max_tokens, provider, system_prompt, ...) when ``env_manager`` is
+            not supplied. Settable per agent loop via ``rollout.agent.agent_loop_config_path``,
+            e.g.::
+
+                - name: continual_agent
+                  _target_: verl.experimental.agent_loop.continual_agent_loop.ContinualAgentLoop
+                  env_manager_config:
+                    model: gpt-4o
+                    max_tokens: 300
+        """
         super().__init__(*args, tools=tools, **kwargs)
-        self.env_manager = env_manager or MathVerifyEnvironmentManager()
+        self.env_manager = env_manager or LLMFeedbackEnvironmentManager(config=env_manager_config)
 
     @rollout_trace_op
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
