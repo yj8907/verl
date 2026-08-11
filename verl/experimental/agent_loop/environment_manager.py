@@ -78,6 +78,13 @@ class LLMFeedbackEnvironmentManager(BaseEnvironmentManager):
         self.model = self.config.get("model", "claude-3-5-sonnet-20241022")
         self.max_tokens = self.config.get("max_tokens", 256)
         self.correct_feedback = self.config.get("correct_feedback", "Your answer is correct.")
+        self.default_system_prompt = self.config.get(
+            "system_prompt",
+            "You are a tutor helping a student solve a problem. Given the student's latest "
+            "attempt and the correct answer, give a short hint about their mistake without "
+            "revealing the final answer. You will see their past attempts and your past hints "
+            "in this conversation -- avoid repeating a hint you already gave.",
+        )
         self.provider = self.config.get("provider") or ("anthropic" if self.model.startswith("claude") else "openai")
 
         if self.provider == "anthropic":
@@ -89,6 +96,19 @@ class LLMFeedbackEnvironmentManager(BaseEnvironmentManager):
         else:
             raise ValueError(f"Unsupported provider '{self.provider}' for model '{self.model}'")
 
+        # Per-instance conversation state: instance_id -> {"system_prompt": str, "messages": list[dict]}
+        self._conversations: dict[str, dict[str, Any]] = {}
+
+    async def create(
+        self, instance_id: Optional[str] = None, system_prompt: Optional[str] = None, **kwargs
+    ) -> str:
+        instance_id = await super().create(instance_id)
+        self._conversations[instance_id] = {
+            "system_prompt": system_prompt if system_prompt is not None else self.default_system_prompt,
+            "messages": [],
+        }
+        return instance_id
+
     async def step(
         self, instance_id: str, response_text: str, ground_truth: str = "", question: str = "", **kwargs
     ) -> EnvStepResult:
@@ -96,29 +116,42 @@ class LLMFeedbackEnvironmentManager(BaseEnvironmentManager):
         if score == 1.0:
             return EnvStepResult(feedback=self.correct_feedback, score=score, done=True, metrics={"env_score": score})
 
-        feedback = await self._generate_feedback(question, response_text, ground_truth)
+        feedback = await self._generate_feedback(instance_id, question, response_text, ground_truth)
         return EnvStepResult(feedback=feedback, score=score, done=False, metrics={"env_score": score})
 
-    async def _generate_feedback(self, question: str, response_text: str, ground_truth: str) -> str:
+    async def _generate_feedback(self, instance_id: str, question: str, response_text: str, ground_truth: str) -> str:
+        conversation = self._conversations[instance_id]
+
         prompt_parts = []
-        if question:
+        if question and not conversation["messages"]:
+            # Only needed on the first attempt -- subsequent turns already have it in history.
             prompt_parts.append(f"Question: {question}")
-        prompt_parts.append(f"Student's answer:\n{response_text}")
+        prompt_parts.append(f"Student's latest answer:\n{response_text}")
         prompt_parts.append(f"Correct answer: {ground_truth}")
         prompt_parts.append("In one or two sentences, point out the likely mistake without revealing the final answer.")
-        prompt = "\n".join(prompt_parts)
+        conversation["messages"].append({"role": "user", "content": "\n".join(prompt_parts)})
 
         if self.provider == "anthropic":
             message = await self.client.messages.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
-                messages=[{"role": "user", "content": prompt}],
+                system=conversation["system_prompt"],
+                messages=conversation["messages"],
             )
-            return message.content[0].text
+            text = message.content[0].text
         else:
+            openai_messages = conversation["messages"]
+            if conversation["system_prompt"]:
+                openai_messages = [{"role": "system", "content": conversation["system_prompt"]}] + openai_messages
             completion = await self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
-                messages=[{"role": "user", "content": prompt}],
+                messages=openai_messages,
             )
-            return completion.choices[0].message.content
+            text = completion.choices[0].message.content
+
+        conversation["messages"].append({"role": "assistant", "content": text})
+        return text
+
+    async def release(self, instance_id: str) -> None:
+        self._conversations.pop(instance_id, None)
