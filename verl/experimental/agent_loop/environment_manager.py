@@ -48,10 +48,30 @@ class BaseEnvironmentManager:
     each assistant turn, ``release`` when the trajectory ends. ``verify_math`` is a
     shared capability available to any subclass that needs exact/symbolic answer
     checking -- it is not an environment on its own.
+
+    Instances are cached per ``(class, tag)`` -- ``tag`` is ``config["name"]``,
+    defaulting to the class name -- so building an agent loop for every trajectory
+    doesn't rebuild the environment (and its LLM clients) each time. Multiple
+    distinctly-configured environments of the same class stay separate by giving
+    each a distinct ``name`` in its config.
     """
 
+    _instances: dict[tuple[type, str], "BaseEnvironmentManager"] = {}
+
+    def __new__(cls, config: Optional[dict] = None):
+        tag = (config or {}).get("name", cls.__name__)
+        key = (cls, tag)
+        if key not in cls._instances:
+            instance = super().__new__(cls)
+            instance._initialized = False
+            cls._instances[key] = instance
+        return cls._instances[key]
+
     def __init__(self, config: Optional[dict] = None):
+        if self._initialized:
+            return
         self.config = config or {}
+        self._initialized = True
 
     async def create(self, instance_id: Optional[str] = None, **kwargs) -> str:
         return instance_id or str(uuid4())
@@ -74,6 +94,8 @@ class LLMFeedbackEnvironmentManager(BaseEnvironmentManager):
     the mistake -- instead of returning a fixed "incorrect, try again" string."""
 
     def __init__(self, config: Optional[dict] = None):
+        if self._initialized:
+            return
         super().__init__(config)
         self.model = self.config.get("model", "claude-3-5-sonnet-20241022")
         self.max_tokens = self.config.get("max_tokens", 256)

@@ -22,7 +22,7 @@ from verl.experimental.agent_loop.agent_loop import (
     ToolListWrap,
     register,
 )
-from verl.experimental.agent_loop.environment_manager import BaseEnvironmentManager, LLMFeedbackEnvironmentManager
+from verl.experimental.agent_loop.environment_manager import LLMFeedbackEnvironmentManager
 from verl.experimental.agent_loop.tool_agent_loop import AgentData, ToolAgentLoop
 from verl.utils.rollout_trace import rollout_trace_op
 
@@ -43,33 +43,54 @@ class ContinualAgentLoop(ToolAgentLoop):
     """Tool-calling agent loop that also consults an ``EnvironmentManager`` after
     every non-tool-call response: the environment scores the answer and returns
     feedback, letting the agent retry (subject to ``multi_turn.max_user_turns``
-    and ``response_length``) instead of terminating on the first attempt."""
+    and ``response_length``) instead of terminating on the first attempt.
+
+    Instances are cached per ``(class, tag)`` -- ``tag`` is the ``name`` kwarg (the
+    ``name:`` field of an ``agent_loop_config_path`` entry flows straight through),
+    defaulting to the class name -- so ``hydra.utils.instantiate``, which is called
+    fresh on every trajectory by ``AgentLoopWorker._run_agent_loop`` and has no
+    caching of its own, doesn't rebuild the loop (tools, tool parser, environment
+    manager, LLM clients) every single call.
+    """
+
+    _instances: dict[tuple[type, str], "ContinualAgentLoop"] = {}
+
+    def __new__(cls, *args, name: Optional[str] = None, **kwargs):
+        tag = name or cls.__name__
+        key = (cls, tag)
+        if key not in cls._instances:
+            instance = super().__new__(cls)
+            instance._initialized = False
+            cls._instances[key] = instance
+        return cls._instances[key]
 
     def __init__(
         self,
         *args,
+        name: Optional[str] = None,
         tools: Optional[ToolListWrap] = None,
-        env_manager: Optional[BaseEnvironmentManager] = None,
         env_manager_config: Optional[dict] = None,
         **kwargs,
     ):
         """Args:
         tools: Tools to use for the tool agent loop.
-        env_manager: Pre-built environment manager instance. Takes precedence over
-            ``env_manager_config`` when both are given.
         env_manager_config: Config dict forwarded to ``LLMFeedbackEnvironmentManager``
-            (model, max_tokens, provider, system_prompt, ...) when ``env_manager`` is
-            not supplied. Settable per agent loop via ``rollout.agent.agent_loop_config_path``,
-            e.g.::
+            (model, max_tokens, provider, system_prompt, ...). Settable per agent loop
+            via ``rollout.agent.agent_loop_config_path``, e.g.::
 
                 - name: continual_agent
                   _target_: verl.experimental.agent_loop.continual_agent_loop.ContinualAgentLoop
                   env_manager_config:
                     model: gpt-4o
                     max_tokens: 300
+        name: Cache tag for this loop; also the registry entry's ``name:`` when
+            loaded via ``agent_loop_config_path``. Not otherwise used.
         """
+        if self._initialized:
+            return
         super().__init__(*args, tools=tools, **kwargs)
-        self.env_manager = env_manager or LLMFeedbackEnvironmentManager(config=env_manager_config)
+        self.env_manager = LLMFeedbackEnvironmentManager(config=env_manager_config)
+        self._initialized = True
 
     @rollout_trace_op
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
