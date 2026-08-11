@@ -703,6 +703,7 @@ class AgentLoopWorker:
                 dataset_cls=self.dataset_cls,
                 data_config=DictConfigWrap(self.config.data),
                 tools=ToolListWrap(self.tools),
+                **kwargs,
             )
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
             return await self._agent_loop_postprocess(output, trajectory["validate"], **kwargs)
