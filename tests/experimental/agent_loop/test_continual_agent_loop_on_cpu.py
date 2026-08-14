@@ -35,6 +35,7 @@ need a live HF tokenizer, rollout config, and inference server, which is out
 of scope for a CPU-only test file.
 """
 
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -44,6 +45,21 @@ from verl.experimental.agent_loop.environment_manager import LLMFeedbackEnvironm
 from verl.experimental.agent_loop.tool_agent_loop import AgentData
 from verl.experimental.agent_loop.tool_agent_loop import AgentState as ToolAgentState
 from verl.experimental.agent_loop.tool_agent_loop import ToolAgentLoop
+
+
+def _close_real_client_sync(env_manager):
+    """Explicitly close a real ``LLMFeedbackEnvironmentManager``'s Anthropic
+    client from a *synchronous* test. Without this, the client's own
+    ``__del__`` finalizer races the test framework's event-loop teardown: it
+    schedules its cleanup as a task on whatever loop is running when the
+    client is garbage-collected, but that loop can be closed before the task
+    runs, producing a spurious 'Task exception was never retrieved:
+    RuntimeError(Event loop is closed)' warning at process exit. Async tests
+    should instead just ``await env_manager.client.close()`` directly, while
+    their own loop is still running."""
+    client = getattr(env_manager, "client", None)
+    if client is not None:
+        asyncio.run(client.close())
 
 
 def _make_bare_loop(**attrs):
@@ -121,6 +137,7 @@ class TestHandleObservingState(unittest.IsolatedAsyncioTestCase):
             # environment manager never touched its conversation state.
             assert env_manager._conversations[env_instance_id]["messages"] == []
         finally:
+            await env_manager.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, env_tag), None)
 
     async def test_incorrect_answer_appends_feedback_and_continues(self):
@@ -154,6 +171,7 @@ class TestHandleObservingState(unittest.IsolatedAsyncioTestCase):
             assert agent_data.user_turns == 1
             loop.apply_chat_template.assert_awaited_once_with([feedback_message], remove_system_prompt=True)
         finally:
+            await env_manager.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, env_tag), None)
 
     async def test_feedback_exceeding_response_length_terminates_without_extending_state(self):
@@ -186,6 +204,7 @@ class TestHandleObservingState(unittest.IsolatedAsyncioTestCase):
             assert agent_data.prompt_ids == list(range(10))
             assert agent_data.user_turns == 0
         finally:
+            await env_manager.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, env_tag), None)
 
 
@@ -278,6 +297,7 @@ class TestInit(unittest.TestCase):
             assert instance.env_manager.config == {"name": env_tag, "max_tokens": 64}
             assert instance.env_manager.max_tokens == 64
         finally:
+            _close_real_client_sync(getattr(instance, "env_manager", None))
             ContinualAgentLoop._instances.pop(key, None)
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, env_tag), None)
 
@@ -297,6 +317,7 @@ class TestInit(unittest.TestCase):
             assert isinstance(instance.env_manager, LLMFeedbackEnvironmentManager)
             assert instance.env_manager.config == {}
         finally:
+            _close_real_client_sync(getattr(instance, "env_manager", None))
             ContinualAgentLoop._instances.pop(key, None)
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, default_tag), None)
 
@@ -366,6 +387,7 @@ class TestRun(unittest.IsolatedAsyncioTestCase):
             assert output.extra_fields["turn_scores"] == [1.0]
             assert output.extra_fields["tool_rewards"] == []
         finally:
+            await env_manager.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, env_tag), None)
 
     async def test_run_filters_tools_by_extra_info_tool_selection(self):
@@ -407,6 +429,7 @@ class TestRun(unittest.IsolatedAsyncioTestCase):
             assert list(captured["active_tools"].keys()) == ["tool_b"]
             assert captured["active_tool_schemas"] == [{"name": "tool_b"}]
         finally:
+            await env_manager.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, env_tag), None)
 
     async def test_run_defaults_to_all_tools_without_tool_selection(self):
@@ -445,6 +468,7 @@ class TestRun(unittest.IsolatedAsyncioTestCase):
             # ``run`` releases the conversation after the state machine terminates.
             assert captured["env_instance_id"] not in env_manager._conversations
         finally:
+            await env_manager.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, env_tag), None)
 
 

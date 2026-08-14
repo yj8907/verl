@@ -97,7 +97,7 @@ class LLMFeedbackEnvironmentManager(BaseEnvironmentManager):
         if self._initialized:
             return
         super().__init__(config)
-        self.model = self.config.get("model", "claude-3-5-sonnet-20241022")
+        self.model = self.config.get("model", "gpt-5.6-luna")
         self.max_tokens = self.config.get("max_tokens", 256)
         self.correct_feedback = self.config.get("correct_feedback", "Your answer is correct.")
         self.default_system_prompt = self.config.get(
@@ -167,7 +167,7 @@ class LLMFeedbackEnvironmentManager(BaseEnvironmentManager):
                 openai_messages = [{"role": "system", "content": conversation["system_prompt"]}] + openai_messages
             completion = await self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=self.max_tokens,
+                max_completion_tokens=self.max_tokens,
                 messages=openai_messages,
             )
             text = completion.choices[0].message.content

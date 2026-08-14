@@ -30,6 +30,7 @@ No ``unittest.mock`` anywhere: ``verify_math`` runs the real ``math_verify``-bac
   there is no skip-if-missing fallback.
 """
 
+import asyncio
 import os
 import unittest
 from uuid import uuid4
@@ -42,6 +43,20 @@ from verl.experimental.agent_loop.environment_manager import (
     EnvStepResult,
     LLMFeedbackEnvironmentManager,
 )
+
+
+def _close_real_client_sync(instance):
+    """Explicitly close a real ``AsyncAnthropic``/``AsyncOpenAI`` client built by
+    a *synchronous* test. Without this, the client's own ``__del__`` finalizer
+    races the test framework's event-loop teardown: it schedules its cleanup as
+    a task on whatever loop is running when the client is garbage-collected, but
+    that loop can be closed before the task runs, producing a spurious 'Task
+    exception was never retrieved: RuntimeError(Event loop is closed)' warning
+    at process exit. Async tests should instead just ``await instance.client
+    .close()`` directly, while their own loop is still running."""
+    client = getattr(instance, "client", None)
+    if client is not None:
+        asyncio.run(client.close())
 
 
 def _make_bare_base(**attrs):
@@ -219,6 +234,7 @@ class TestLLMFeedbackInit(unittest.TestCase):
             assert instance.provider == "openai"
             assert isinstance(instance.client, AsyncOpenAI)
         finally:
+            _close_real_client_sync(instance)
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, tag), None)
 
     def test_explicit_provider_overrides_model_based_default(self):
@@ -233,6 +249,7 @@ class TestLLMFeedbackInit(unittest.TestCase):
             assert instance.provider == "openai"
             assert isinstance(instance.client, AsyncOpenAI)
         finally:
+            _close_real_client_sync(instance)
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, tag), None)
 
     def test_base_url_is_forwarded_to_client(self):
@@ -245,6 +262,7 @@ class TestLLMFeedbackInit(unittest.TestCase):
 
             assert str(instance.client.base_url).rstrip("/") == "https://proxy.internal/v1"
         finally:
+            _close_real_client_sync(instance)
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, tag), None)
 
     @unittest.skip("")
@@ -325,13 +343,14 @@ class TestLLMFeedbackStep(unittest.IsolatedAsyncioTestCase):
             instance_id = await instance.create()
 
             result = await instance.step(instance_id, "42", ground_truth="42")
-
+            print(result)
             assert result == EnvStepResult(
                 feedback=instance.correct_feedback, score=1.0, done=True, metrics={"env_score": 1.0}
             )
             # Correct answers short-circuit before any LLM call, so no turn is recorded.
             assert instance._conversations[instance_id]["messages"] == []
         finally:
+            await instance.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, tag), None)
 
     async def test_incorrect_answer_calls_the_real_llm_for_feedback(self):
@@ -340,7 +359,8 @@ class TestLLMFeedbackStep(unittest.IsolatedAsyncioTestCase):
             instance_id = await instance.create()
 
             result = await instance.step(instance_id, "41", ground_truth="42", question="What is 19 + 23?")
-
+            print(result)
+            
             assert result.done is False
             assert result.score == 0.0
             assert result.metrics == {"env_score": 0.0}
@@ -350,6 +370,7 @@ class TestLLMFeedbackStep(unittest.IsolatedAsyncioTestCase):
             assert messages[0]["role"] == "user"
             assert messages[1] == {"role": "assistant", "content": result.feedback}
         finally:
+            await instance.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, tag), None)
 
 
@@ -379,6 +400,7 @@ class TestLLMFeedbackGenerateFeedback(unittest.IsolatedAsyncioTestCase):
             assert conversation[0] == {"role": "user", "content": expected_content}
             assert conversation[1] == {"role": "assistant", "content": text}
         finally:
+            await instance.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, tag), None)
 
     async def test_question_is_omitted_on_subsequent_attempts(self):
@@ -396,6 +418,7 @@ class TestLLMFeedbackGenerateFeedback(unittest.IsolatedAsyncioTestCase):
             assert conversation[2]["role"] == "user"
             assert not conversation[2]["content"].startswith("Question:")
         finally:
+            await instance.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, tag), None)
 
     async def test_openai_path_calls_the_real_api_and_records_history(self):
@@ -410,6 +433,7 @@ class TestLLMFeedbackGenerateFeedback(unittest.IsolatedAsyncioTestCase):
             assert conversation[0]["role"] == "user"
             assert conversation[1] == {"role": "assistant", "content": text}
         finally:
+            await instance.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, tag), None)
 
     async def test_openai_path_works_without_a_system_prompt(self):
@@ -421,6 +445,7 @@ class TestLLMFeedbackGenerateFeedback(unittest.IsolatedAsyncioTestCase):
 
             assert isinstance(text, str) and text.strip()
         finally:
+            await instance.client.close()
             LLMFeedbackEnvironmentManager._instances.pop((LLMFeedbackEnvironmentManager, tag), None)
 
 
