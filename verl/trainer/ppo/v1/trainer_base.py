@@ -971,6 +971,7 @@ class PPOTrainer(ABC):
         dump_all_keys: list[str] = []
         session_to_sample_idx: dict[str, int] = {}
 
+        icounter = 0
         for batch_dict in self.val_dataloader:
             # 1. put batch to agent loop manager
             batch_dict["uid"] = np.array(
@@ -989,11 +990,12 @@ class PPOTrainer(ABC):
 
             # 2. sample batch from replay buffer: one prompt (GRPO group) per submitted row.
             batch, _ = self.replay_buffer.sample(
-                global_steps=self.global_steps, partition_id="val", batch_size=len(batch)
+                global_steps=self.global_steps, partition_id="val", batch_size=len(batch)//3*2
             )
 
             # 3. [OPTIONAL] compute reward score with colocated reward model
             if self.reward_loop_manager.reward_loop_worker_handles is None:
+                logger.info(f"reward_loop_worker_handles: {icounter}")
                 self.checkpoint_manager.sleep_replicas()
                 batch = self._compute_reward_colocate(batch)
                 self.checkpoint_manager.update_weights()
@@ -1026,6 +1028,8 @@ class PPOTrainer(ABC):
             text_data["responses"] = text_data["responses"].to_padded_tensor(padding=self.tokenizer.pad_token_id)
             all_inputs = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in text_data["prompts"]]
             all_outputs = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in text_data["responses"]]
+            for input, output in zip(all_inputs, all_outputs):
+                print(f"Input: {input}; Output: {output}")
 
             fields = ["uid", "rm_scores", "num_turns", "reward_model", "data_source", "extra_fields"]
             data = tq.kv_batch_get(keys=final_keys, partition_id=batch.partition_id, select_fields=fields)
@@ -1072,6 +1076,12 @@ class PPOTrainer(ABC):
 
             # 5. cleanup transfer queue
             tq.kv_clear(keys=batch.keys, partition_id=batch.partition_id)
+
+            if icounter > 0:
+                break
+            icounter += 1
+            logger.info(f"validate: {icounter}")
+
 
         # logger to wandb
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)

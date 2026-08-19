@@ -89,7 +89,7 @@ class ContinualAgentLoop(ToolAgentLoop):
         if self._initialized:
             return
         super().__init__(*args, tools=tools, **kwargs)
-        self.env_manager = LLMFeedbackEnvironmentManager(config=self.config.get("env_config", {}))
+        self.env_manager = LLMFeedbackEnvironmentManager(config=env_config if env_config else {})
         self._initialized = True
 
     @rollout_trace_op
@@ -211,7 +211,7 @@ class ContinualAgentLoop(ToolAgentLoop):
         correct answer; otherwise feeds the environment's feedback back to the
         model as the next user turn, subject to the same ``max_user_turns``/
         response-length limits that gate tool responses."""
-        text = await self.loop.run_in_executor(None, self.tokenizer.decode, agent_data.response_ids)
+        text = await self.loop.run_in_executor(None, self.tokenizer.decode, agent_data.prompt_ids)
         result = await self.env_manager.step(agent_data._env_instance_id, text, ground_truth=agent_data._ground_truth)
         agent_data.turn_scores.append(result.score)
 
@@ -219,6 +219,9 @@ class ContinualAgentLoop(ToolAgentLoop):
             return AgentState.TERMINATED
 
         feedback_message = [{"role": "user", "content": result.feedback}]
+        print(f"""stronger model input: {text},
+        feedback: {feedback_message}
+        """)
         agent_data.messages.extend(feedback_message)
         response_ids = await self.apply_chat_template(feedback_message, remove_system_prompt=True)
         response_ids = self.turn_separator + response_ids

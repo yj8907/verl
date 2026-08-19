@@ -438,12 +438,21 @@ class ReplayBuffer:
             evicted_uids, stale_count, dapo_count, metrics = self._evict_terminal_groups(
                 global_steps, partition_id, eviction_reasons
             )
+            # logger.info(f"replay buffer total: {len(self.pending_keys[partition_id]) 
+            #                                      +len(self.running_keys[partition_id]) 
+            #                                      +len(self.finished_keys[partition_id]) 
+            #                                      +len(self.failure_keys[partition_id]) }")
+            logger.info(f"failed_count: {failed_count}")
+            
             if evicted_uids:
                 _accumulate_eviction_metrics(eviction_metrics, metrics, stale_count)
 
             sampleable_keys = self._sampleable_terminal_keys(partition_id, eviction_reasons)
             has_enough_samples = len(sampleable_keys) >= batch_size
             inflight_count = len(self.pending_keys[partition_id]) + len(self.running_keys[partition_id])
+
+            logger.info(f"total keys: {len(sampleable_keys)}/{batch_size}")
+            logger.info(f"sampleable_keys: {len(sampleable_keys)}")
 
             if not dapo_enabled and failed_count > 0 and not has_enough_samples:
                 self.refill_fn(failed_count)
@@ -469,6 +478,7 @@ class ReplayBuffer:
                         continue
 
             can_select = has_enough_samples and (not dapo_enabled or inflight_count == 0)
+            logger.info(f"can_select: {can_select}")
             if can_select:
                 selected_prompt_uids, partition_snapshot, _prompt_global_steps_snapshot = self._select_prompt_uids(
                     partition_id, sampleable_keys, batch_size
@@ -485,6 +495,7 @@ class ReplayBuffer:
 
             last_debug_time = self._wait_for_next_poll(partition_id, last_debug_time)
 
+        logger.info("replay buffer sample finished")
         selected_uids = set(selected_prompt_uids)
         if partition_id != "val" and not any(key.split("_")[0] in selected_uids for key in partition_snapshot):
             message = "Sync replay buffer selected terminal groups with no materializable trajectories."

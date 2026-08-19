@@ -174,8 +174,10 @@ class ToolAgentLoop(AgentLoopBase):
                 state = AgentState.TERMINATED
 
         # Finalize output
+        print(f"conversation: {self.tokenizer.decode(agent_data.prompt_ids)}")
         response_ids = agent_data.prompt_ids[-len(agent_data.response_mask) :]
         prompt_ids = agent_data.prompt_ids[: len(agent_data.prompt_ids) - len(agent_data.response_mask)]
+
         multi_modal_data = {}
         if agent_data.image_data is not None:
             multi_modal_data["images"] = agent_data.image_data
@@ -371,7 +373,9 @@ class ToolAgentLoop(AgentLoopBase):
 
             if tool_reward is not None:
                 agent_data.tool_rewards.append(tool_reward)
-
+        print(f""" tool message: 
+        {add_messages}
+        """)
         agent_data.messages.extend(add_messages)
 
         if self.enable_continuous_token and not new_images_this_turn:

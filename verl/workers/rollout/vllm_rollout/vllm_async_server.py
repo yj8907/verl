@@ -808,7 +808,7 @@ class vLLMHttpServer:
             await self.engine.reset_prefix_cache(reset_connector=True)
 
             await self.engine.reset_mm_cache()
-            await self.engine.reset_encoder_cache()
+            await self.engine.reset_prefix_cache()
 
     async def release_kv_cache(self):
         """Release only kv_cache GPU memory, keeping model weights intact.
@@ -1096,7 +1096,7 @@ class vLLMHttpServer:
         else:
             sleep_level = 2
         await self.engine.sleep(level=sleep_level)
-        await self.engine.reset_encoder_cache()
+        await self.engine.reset_prefix_cache()
 
 
 class vLLMReplica(RolloutReplica):
