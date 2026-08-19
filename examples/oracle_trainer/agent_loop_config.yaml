@@ -1,0 +1,5 @@
+- name: continual_agent
+  _target_: verl.experimental.agent_loop.continual_agent_loop.ContinualAgentLoop
+  env_config:
+    model: gpt-4o-mini
+    max_tokens: 512

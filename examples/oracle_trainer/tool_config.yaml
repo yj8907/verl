@@ -2,7 +2,7 @@
     - class_name: examples.oracle_trainer.llm_tool.LLMTool
       config:
         type: native
-        model: claude-sonnet-5
+        model: gpt-4o-mini
         max_tokens: 512
         system_prompt: "You are a terse fact-checker."
       tool_schema:
