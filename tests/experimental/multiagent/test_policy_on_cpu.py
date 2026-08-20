@@ -16,7 +16,7 @@ import unittest
 
 from verl.experimental.multiagent.actor_backend import ActorTurnResult
 from verl.experimental.multiagent.config.actor_config import CommunicationPolicyConfig
-from verl.experimental.multiagent.policy import EpisodeState, RigidSequencePolicy, build_policy
+from verl.experimental.multiagent.comm_policy import EpisodeState, RigidSequencePolicy, build_policy
 
 
 def _drive(policy, max_iters=10, done_after_actor=None, done_after_n_turns=None):

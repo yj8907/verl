@@ -43,7 +43,7 @@ from verl.experimental.multiagent.actor_backend import (
     TrainableVerlActorBackend,
 )
 from verl.experimental.multiagent.config.actor_config import MultiAgentFleetConfig
-from verl.experimental.multiagent.policy import EpisodeState, build_policy
+from verl.experimental.multiagent.comm_policy import EpisodeState, build_policy
 from verl.trainer.ppo.v1.agent_loop_tq import AgentLoopManagerTQ as _AgentLoopManagerTQBase
 from verl.trainer.ppo.v1.agent_loop_tq import AgentLoopWorkerTQ
 from verl.utils import hf_tokenizer
