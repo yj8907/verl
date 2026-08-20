@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/experimental/agent_loop/ -k \"on_cpu\" -v)",
+      "Bash(timeout 60 python -c ' *)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - actor_fleet@multiagent: math_teacher_student
+  - _self_
+
+# Route rollout dispatch through the multi-agent fleet loop (verl/experimental/multiagent/agent_loop.py)
+# instead of the default single-turn/tool-agent loop.
+actor_rollout_ref:
+  rollout:
+    # Needed so MultiAgentLoop can attach rollout-time logprobs to trainable turns when available.
+    calculate_log_probs: True
+
+    agent:
+      default_agent_loop: multi_agent
