@@ -80,7 +80,7 @@ ROLLOUT=(
     actor_rollout_ref.rollout.multi_turn.tool_config_path="examples/oracle_trainer/tool_config.yaml"
     actor_rollout_ref.rollout.agent.default_agent_loop="continual_agent"
     actor_rollout_ref.rollout.agent.agent_loop_config_path="examples/oracle_trainer/agent_loop_config.yaml"
-
+    actor_rollout_ref.rollout.agent.num_workers=2
 )
 
 REF=(

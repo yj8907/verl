@@ -8,7 +8,7 @@ actors:
       You are solving a math word problem. Think step by step, then give a final numeric answer
       on its own line, prefixed with "Answer:".
     backend: trainable_verl
-    model_ref: main
+    engine_ref: main
 
   oracle:
     actor_id: oracle
@@ -17,7 +17,7 @@ actors:
       sentence pointing at the likely mistake without revealing the final answer. If it looks
       correct, say so briefly.
     backend: external_api
-    model_ref: oracle
+    engine_ref: oracle
     external_api:
       provider: openai
       model: gpt-4o-mini

@@ -545,6 +545,7 @@ class LLMServerManager:
         ]
 
         if self.worker_group and self.rollout_config.name != "trtllm":
+            # server is vLLMReplica
             await asyncio.gather(*[server.init_hybrid(self.worker_group) for server in self.rollout_replicas])
         # TODO: unify trtllm to init_hybrid
         elif self.worker_group and self.rollout_config.name == "trtllm":

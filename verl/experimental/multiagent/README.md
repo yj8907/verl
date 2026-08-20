@@ -11,8 +11,10 @@ goal statement.
   identified by `actor_id`, with its own `system_prompt` and a `backend`:
   - `trainable_verl`: a verl-managed rollout server whose weights PPO updates. Exactly one actor
     must have `model_ref: main` (reuses the trainer's primary `actor_rollout_ref` config and
-    worker group); any other trainable actor gets its own dedicated resource pool and training
-    engine, configured via its own `actor_rollout_ref` sub-config plus `n_gpus_per_node`/`nnodes`.
+    worker group); every other trainable actor is configured via its own `actor_rollout_ref`
+    sub-config plus `n_gpus_per_node`/`nnodes`, and actors that set the *same* `model_ref` are the
+    same model -- they share one dedicated resource pool, worker group, and `LLMServerManager`
+    (config must match exactly across the group) instead of each getting a dedicated copy.
   - `frozen_verl`: a verl-managed, inference-only rollout server (never trained) -- for a stronger
     local model you can host but don't want/need to fine-tune.
   - `external_api`: an external OpenAI/Anthropic-compatible endpoint (never trained) -- for a
@@ -64,6 +66,31 @@ policy:
   max_turns: 4
 ```
 
+Two actor_ids can share one model by giving them the same `model_ref` (e.g. two "critic" roles
+both played by `main`'s own weights, or two personas on one auxiliary model) -- they must then set
+identical `actor_rollout_ref`/`n_gpus_per_node`/`nnodes` (enforced by
+`MultiAgentFleetConfig._check_shared_model_groups`), and the trainer collapses them onto one
+resource pool, worker group, and `LLMServerManager`:
+
+```yaml
+  reviewer_a:
+    actor_id: reviewer_a
+    backend: trainable_verl
+    model_ref: reviewer          # same model_ref as reviewer_b -> shared pool/worker/server
+    actor_rollout_ref: {...}
+    n_gpus_per_node: 2
+    nnodes: 1
+
+  reviewer_b:
+    actor_id: reviewer_b
+    backend: trainable_verl
+    model_ref: reviewer          # must match reviewer_a's actor_rollout_ref/n_gpus_per_node/nnodes
+    actor_rollout_ref: {...}
+    n_gpus_per_node: 2
+    nnodes: 1
+```
+```
+
 ## Architecture notes (for anyone extending this)
 
 - **No shared-file edits.** Everything here subclasses/extends `verl/trainer/ppo/v1/trainer_base.py`,
@@ -72,15 +99,19 @@ policy:
   extension point (`main_multiagent.py`, the same pattern
   `verl/experimental/one_step_off_policy/main_ppo.py` uses).
 - **Resource pools**: `trainer.py:MultiAgentPPOTrainer._init_resource_pool_mgr` gives each
-  non-main verl-managed actor its own dedicated Ray resource pool, generalizing the existing
-  `teacher_pool` precedent for on-policy distillation. Actor ids are used directly as string keys
-  into `ResourcePoolManager`'s mapping -- `Role` (`verl/trainer/ppo/utils.py`) can't be subclassed
-  (Python disallows extending an `Enum` that already has members).
+  *unique* `model_ref` among non-main trainable actors its own dedicated Ray resource pool
+  (multiple actor_ids sharing a `model_ref` collapse onto one pool/worker group/`LLMServerManager`
+  in `_setup_actor_groups`), generalizing the existing `teacher_pool` precedent for on-policy
+  distillation. Frozen actors still get one dedicated pool per actor_id via `FrozenActorManager`.
+  Actor ids/model_refs are used directly as string keys into `ResourcePoolManager`'s mapping --
+  `Role` (`verl/trainer/ppo/utils.py`) can't be subclassed (Python disallows extending an `Enum`
+  that already has members).
 - **Per-group training**: the six single-actor pipeline methods (`_balance_batch`,
   `_compute_old_log_prob`, `_compute_ref_log_prob`, `_compute_advantage`, `_update_actor`) are
-  reused *unmodified* per trainable group: filter the step's TransferQueue rows to that group (by
-  the `model_ref` field `MultiAgentLoop` stamps into `AgentLoopOutput.extra_fields`), temporarily
-  rebind `self.actor_rollout_wg`/`self.config`/`self.tokenizer` to the group
+  reused *unmodified* per model group: filter the step's TransferQueue rows to that group (by the
+  `model_ref` field `MultiAgentLoop` stamps into `AgentLoopOutput.extra_fields`, which combines
+  every actor_id sharing that model_ref into one on-policy training batch), temporarily rebind
+  `self.actor_rollout_wg`/`self.config`/`self.tokenizer` to the group
   (`trainer.py:_bind_actor_group`), call the inherited method, restore. This must stay a
   sequential loop across groups -- see the docstring on `_bind_actor_group` for why.
 - **Token-level correctness**: `agent_loop.py:ActorTurnRenderer` incrementally builds each
