@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Validates ``ActorTurnRenderer``'s core correctness invariant: the token sequence it
-incrementally accumulates for one trainable actor across a multi-agent episode must be
+"""Validates ``AgentTurnRenderer``'s core correctness invariant: the token sequence it
+incrementally accumulates for one trainable agent across a multi-agent episode must be
 byte-identical to what a real generation call was actually conditioned on. If these diverge,
 ``old_log_probs`` recomputed from the stored sequence at training time no longer corresponds to
 what the rollout policy actually sampled, silently corrupting the PPO importance ratio.
@@ -22,12 +22,12 @@ import unittest
 
 from transformers import AutoTokenizer
 
-from verl.experimental.multiagent.agent_loop import ActorTurnRenderer
+from verl.experimental.multiagent.agent_loop import AgentTurnRenderer
 
 MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 
 
-class TestActorTurnRendererEquivalence(unittest.TestCase):
+class TestAgentTurnRendererEquivalence(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tokenizer = AutoTokenizer.from_pretrained(MODEL)
@@ -39,7 +39,7 @@ class TestActorTurnRendererEquivalence(unittest.TestCase):
         return self.tokenizer.encode(text, add_special_tokens=False) + [self.tokenizer.eos_token_id]
 
     def test_own_generation_prompt_matches_a_fresh_generation_prompt_call(self):
-        renderer = ActorTurnRenderer(self.tokenizer)
+        renderer = AgentTurnRenderer(self.tokenizer)
         messages = [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "Hi"}]
 
         prompt_ids = renderer.build_initial_prompt(messages)
@@ -51,7 +51,7 @@ class TestActorTurnRendererEquivalence(unittest.TestCase):
         assert incremental_generation_prompt == fresh_generation_prompt
 
     def test_observation_turn_matches_full_retemplate_at_that_point(self):
-        renderer = ActorTurnRenderer(self.tokenizer)
+        renderer = AgentTurnRenderer(self.tokenizer)
         system = {"role": "system", "content": "You are helpful."}
         user = {"role": "user", "content": "What is 2+2?"}
         own_text = "The answer is 4."
@@ -68,7 +68,7 @@ class TestActorTurnRendererEquivalence(unittest.TestCase):
     def test_three_turn_chain_matches_what_generation_actually_saw(self):
         """Own turn -> observation -> own turn again: the buffer right before the third turn's
         generation must equal a real add_generation_prompt=True call over the same history."""
-        renderer = ActorTurnRenderer(self.tokenizer)
+        renderer = AgentTurnRenderer(self.tokenizer)
         system = {"role": "system", "content": "You are helpful."}
         user = {"role": "user", "content": "What is 2+2?"}
         first_text = "The answer is 4."

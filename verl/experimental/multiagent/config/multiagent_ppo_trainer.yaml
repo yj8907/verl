@@ -4,7 +4,7 @@ hydra:
 
 defaults:
   - ppo_trainer
-  - actor_fleet@multiagent: math_teacher_student
+  - agent_fleet@multiagent: math_teacher_student
   - _self_
 
 # Route rollout dispatch through the multi-agent fleet loop (verl/experimental/multiagent/agent_loop.py)

@@ -16,18 +16,18 @@ import unittest
 
 from omegaconf import OmegaConf
 
-from verl.experimental.multiagent.config.actor_config import MultiAgentFleetConfig
+from verl.experimental.multiagent.config.agent_config import MultiAgentFleetConfig
 
 MAIN_ORACLE_CFG = {
-    "actors": {
+    "agents": {
         "main": {
-            "actor_id": "main",
+            "agent_id": "main",
             "system_prompt": "solve the problem",
             "backend": "trainable_verl",
             "model_ref": "main",
         },
         "oracle": {
-            "actor_id": "oracle",
+            "agent_id": "oracle",
             "system_prompt": "give a one-line hint",
             "backend": "external_api",
             "model_ref": "oracle",
@@ -41,85 +41,85 @@ MAIN_ORACLE_CFG = {
 class TestMultiAgentFleetConfigParsing(unittest.TestCase):
     def test_parses_main_and_external_api_oracle(self):
         fleet = MultiAgentFleetConfig.from_omegaconf(OmegaConf.create(MAIN_ORACLE_CFG))
-        assert fleet.main_actor_id == "main"
-        assert fleet.trainable_actor_ids() == ["main"]
-        assert fleet.actors["oracle"].trainable is False
-        assert fleet.actors["oracle"].external_api.model == "gpt-4o-mini"
+        assert fleet.main_agent_id == "main"
+        assert fleet.trainable_agent_ids() == ["main"]
+        assert fleet.agents["oracle"].trainable is False
+        assert fleet.agents["oracle"].external_api.model == "gpt-4o-mini"
         assert fleet.policy.turn_order == ["main", "oracle", "main"]
 
     def test_actor_rollout_ref_stays_a_dictconfig_not_a_plain_dict(self):
         cfg = OmegaConf.create(MAIN_ORACLE_CFG)
-        cfg.actors.main.actor_rollout_ref = {"model": {"path": "Qwen/Qwen2.5-0.5B-Instruct"}}
+        cfg.agents.main.actor_rollout_ref = {"model": {"path": "Qwen/Qwen2.5-0.5B-Instruct"}}
         fleet = MultiAgentFleetConfig.from_omegaconf(cfg)
-        # Must support attribute access (actor.actor_rollout_ref.model.path), matching how
+        # Must support attribute access (agent.actor_rollout_ref.model.path), matching how
         # config.actor_rollout_ref is used everywhere else in the trainer -- a plain dict would break it.
-        assert fleet.actors["main"].actor_rollout_ref.model.path == "Qwen/Qwen2.5-0.5B-Instruct"
+        assert fleet.agents["main"].actor_rollout_ref.model.path == "Qwen/Qwen2.5-0.5B-Instruct"
 
-    def test_empty_actors_is_a_noop(self):
+    def test_empty_agents_is_a_noop(self):
         fleet = MultiAgentFleetConfig.from_omegaconf(OmegaConf.create({}))
-        assert fleet.actors == {}
+        assert fleet.agents == {}
 
-    def test_requires_exactly_one_main_actor(self):
+    def test_requires_exactly_one_main_agent(self):
         cfg = OmegaConf.create(MAIN_ORACLE_CFG)
-        cfg.actors.oracle.model_ref = "main"
+        cfg.agents.oracle.model_ref = "main"
         with self.assertRaises(ValueError):
             MultiAgentFleetConfig.from_omegaconf(cfg)
 
-    def test_main_actor_must_be_trainable(self):
+    def test_main_agent_must_be_trainable(self):
         cfg = OmegaConf.create(MAIN_ORACLE_CFG)
-        cfg.actors.main.backend = "frozen_verl"
-        cfg.actors.main.actor_rollout_ref = {"model": {"path": "Qwen/Qwen2.5-0.5B-Instruct"}}
+        cfg.agents.main.backend = "frozen_verl"
+        cfg.agents.main.actor_rollout_ref = {"model": {"path": "Qwen/Qwen2.5-0.5B-Instruct"}}
         with self.assertRaises(ValueError):
             MultiAgentFleetConfig.from_omegaconf(cfg)
 
-    def test_no_main_actor_raises(self):
+    def test_no_main_agent_raises(self):
         cfg = OmegaConf.create(MAIN_ORACLE_CFG)
-        cfg.actors.main.model_ref = "not_main"
-        cfg.actors.main.actor_rollout_ref = {"model": {"path": "x"}}
-        cfg.actors.main.n_gpus_per_node = 1
-        cfg.actors.main.nnodes = 1
+        cfg.agents.main.model_ref = "not_main"
+        cfg.agents.main.actor_rollout_ref = {"model": {"path": "x"}}
+        cfg.agents.main.n_gpus_per_node = 1
+        cfg.agents.main.nnodes = 1
         with self.assertRaises(ValueError):
             MultiAgentFleetConfig.from_omegaconf(cfg)
 
-    def test_external_api_actor_missing_config_raises(self):
+    def test_external_api_agent_missing_config_raises(self):
         cfg = OmegaConf.create(MAIN_ORACLE_CFG)
-        cfg.actors.oracle.external_api = None
+        cfg.agents.oracle.external_api = None
         with self.assertRaises(ValueError):
             MultiAgentFleetConfig.from_omegaconf(cfg)
 
-    def test_main_actor_cannot_be_external_api(self):
+    def test_main_agent_cannot_be_external_api(self):
         cfg = OmegaConf.create(MAIN_ORACLE_CFG)
-        cfg.actors.main.backend = "external_api"
-        cfg.actors.main.external_api = {"provider": "openai", "model": "gpt-4o-mini"}
+        cfg.agents.main.backend = "external_api"
+        cfg.agents.main.external_api = {"provider": "openai", "model": "gpt-4o-mini"}
         with self.assertRaises(ValueError):
             MultiAgentFleetConfig.from_omegaconf(cfg)
 
-    def test_non_main_verl_actor_requires_own_actor_rollout_ref(self):
+    def test_non_main_verl_agent_requires_own_actor_rollout_ref(self):
         cfg = OmegaConf.create(MAIN_ORACLE_CFG)
-        cfg.actors.oracle.backend = "frozen_verl"
-        cfg.actors.oracle.n_gpus_per_node = 1
-        cfg.actors.oracle.nnodes = 1
+        cfg.agents.oracle.backend = "frozen_verl"
+        cfg.agents.oracle.n_gpus_per_node = 1
+        cfg.agents.oracle.nnodes = 1
         # actor_rollout_ref intentionally left unset.
         with self.assertRaises(ValueError):
             MultiAgentFleetConfig.from_omegaconf(cfg)
 
-    def test_non_main_verl_actor_requires_positive_resource_pool(self):
+    def test_non_main_verl_agent_requires_positive_resource_pool(self):
         cfg = OmegaConf.create(MAIN_ORACLE_CFG)
-        cfg.actors.oracle.backend = "frozen_verl"
-        cfg.actors.oracle.actor_rollout_ref = {"model": {"path": "Qwen/Qwen2.5-0.5B-Instruct"}}
+        cfg.agents.oracle.backend = "frozen_verl"
+        cfg.agents.oracle.actor_rollout_ref = {"model": {"path": "Qwen/Qwen2.5-0.5B-Instruct"}}
         # n_gpus_per_node/nnodes left at their zero defaults.
         with self.assertRaises(ValueError):
             MultiAgentFleetConfig.from_omegaconf(cfg)
 
-    def test_policy_turn_order_referencing_unknown_actor_raises(self):
+    def test_policy_turn_order_referencing_unknown_agent_raises(self):
         cfg = OmegaConf.create(MAIN_ORACLE_CFG)
         cfg.policy.turn_order = ["main", "ghost"]
         with self.assertRaises(ValueError):
             MultiAgentFleetConfig.from_omegaconf(cfg)
 
-    def test_actors_key_must_match_actor_id_field(self):
+    def test_agents_key_must_match_agent_id_field(self):
         cfg = OmegaConf.create(MAIN_ORACLE_CFG)
-        cfg.actors.main.actor_id = "someone_else"
+        cfg.agents.main.agent_id = "someone_else"
         with self.assertRaises(ValueError):
             MultiAgentFleetConfig.from_omegaconf(cfg)
 

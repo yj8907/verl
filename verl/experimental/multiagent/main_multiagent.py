@@ -15,7 +15,7 @@
 
 Mirrors ``verl.trainer.main_ppo.TaskRunnerV1`` (config -> init -> init_agent_loop_manager -> fit),
 with ``MultiAgentTaskRunner`` swapping in ``MultiAgentPPOTrainer``/``MultiAgentLoopManagerTQ`` and
-wiring the fleet's non-main actor LLM clients through. Uses the unmodified
+wiring the fleet's non-main agent LLM clients through. Uses the unmodified
 ``verl.trainer.main_ppo.run_ppo(config, task_runner_class=...)`` extension point (the same one
 ``verl/experimental/one_step_off_policy/main_ppo.py`` already uses), so no shared file is touched.
 """
@@ -54,7 +54,7 @@ class MultiAgentTaskRunner:
             llm_client=self.trainer.get_llm_client(),
             teacher_client=self.trainer.get_teacher_client(),
             reward_loop_worker_handles=self.trainer.get_reward_handles(),
-            actor_llm_clients=self.trainer.get_actor_llm_clients(),
+            agent_llm_clients=self.trainer.get_agent_llm_clients(),
         )
 
     def run(self, config):

@@ -11,24 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""``MultiAgentPPOTrainer``: elevates the v1 sync PPO trainer from one actor to a fleet.
+"""``MultiAgentPPOTrainer``: elevates the v1 sync PPO trainer from a single agent to a fleet.
 
 Design (see verl/experimental/multiagent/CLAUDE.md and the accompanying plan):
 - One dedicated Ray resource pool per unique shared-model group among non-"main" verl-managed
-  trainable actors (actors with the same ``engine_ref`` are the same model and share one pool,
+  trainable agents (agents with the same ``engine_ref`` are the same model and share one pool,
   worker group, and ``LLMServerManager``; distinct engine_refs each get their own), generalizing
-  the existing ``teacher_pool`` precedent in ``trainer_base.py``. Frozen actors still get one
-  dedicated pool per actor_id via ``FrozenActorManager``.
+  the existing ``teacher_pool`` precedent in ``trainer_base.py``. Frozen agents still get one
+  dedicated pool per agent_id via ``FrozenAgentManager``.
 - Six training-pipeline methods (``_balance_batch``, ``_compute_old_log_prob``,
   ``_compute_ref_log_prob``, ``_compute_advantage``, ``_update_actor``) are reused UNMODIFIED
   from ``PPOTrainer``/``PPOTrainerSync`` per model group: filter the step's batch to that
-  group's rows (combining every actor_id sharing the engine_ref, since they're on-policy for the
+  group's rows (combining every agent_id sharing the engine_ref, since they're on-policy for the
   same weights), temporarily rebind ``self.actor_rollout_wg``/``self.config``/``self.tokenizer``
   to the group, call the inherited method, restore. This avoids touching the shared base class.
 - v1 scope: critic/GAE and reference-policy KL stay main-only (the target recipes use GRPO with
   a shared episodic reward, so a per-group critic isn't needed); on-policy distillation (the
   ``distillation``/teacher-logprob KD subsystem) is a separate, unrelated mechanism and is not
-  wired to fleet actors -- cross-actor teaching happens entirely through the conversation itself.
+  wired to fleet agents -- cross-agent teaching happens entirely through the conversation itself.
 """
 
 import copy
@@ -43,8 +43,8 @@ from transfer_queue import KVBatchMeta
 from transformers import PreTrainedTokenizerBase
 
 from verl.checkpoint_engine import CheckpointEngineManager
-from verl.experimental.multiagent.config.actor_config import ActorConfig, MultiAgentFleetConfig
-from verl.experimental.multiagent.frozen_actor_manager import FrozenActorManager
+from verl.experimental.multiagent.config.agent_config import AgentConfig, MultiAgentFleetConfig
+from verl.experimental.multiagent.frozen_agent_manager import FrozenAgentManager
 from verl.single_controller.ray import (
     RayClassWithInitArgs,
     RayWorkerGroup,
@@ -65,15 +65,15 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
 
 
 @dataclass
-class ActorGroupHandle:
+class AgentGroupHandle:
     """Everything needed to train and serve one shared-model group of non-"main" trainable fleet
-    actors: actors that share a ``engine_ref`` are the same model and share one resource pool,
+    agents: agents that share a ``engine_ref`` are the same model and share one resource pool,
     worker group, ``LLMServerManager``, and ``CheckpointEngineManager`` rather than each getting
     a dedicated copy."""
 
     engine_ref: str
-    actor_ids: list[str]
-    """All actor_ids in the fleet that share this model (``ActorConfig.engine_ref``)."""
+    agent_ids: list[str]
+    """All agent_ids in the fleet that share this model (``AgentConfig.engine_ref``)."""
     config: DictConfig
     """Shallow clone of the trainer config with ``actor_rollout_ref`` swapped to this group's own."""
     actor_wg: RayWorkerGroup
@@ -84,10 +84,10 @@ class ActorGroupHandle:
 
 class MultiAgentPPOTrainer(PPOTrainerSync):
     """Synchronous multi-agent PPO trainer: colocated fleet, one dedicated pool per unique
-    shared-model group among non-main verl-managed actors."""
+    shared-model group among non-main verl-managed agents."""
 
-    #: Sentinel ``engine_ref`` reused from ``ActorConfig.is_main`` -- the trainer's own primary
-    #: actor, never a key in ``self.engine_groups``.
+    #: Sentinel ``engine_ref`` reused from ``AgentConfig.is_main`` -- the trainer's own primary
+    #: agent, never a key in ``self.engine_groups``.
     _MAIN_engine_ref = "main"
 
     def _get_pool_name(self, engine_ref):
@@ -95,7 +95,7 @@ class MultiAgentPPOTrainer(PPOTrainerSync):
         pool_name = f"{engine_ref}_pool"
 
         return pool_name
-    
+
     def _init_resource_pool_mgr(self):
         config = self.config
         self.role_worker_mapping = {}
@@ -104,77 +104,77 @@ class MultiAgentPPOTrainer(PPOTrainerSync):
 
         # --- replicate PPOTrainer._init_resource_pool_mgr's main/critic/reward/teacher setup ---
         # (can't call super() here: it also constructs self.resource_pool_manager as its last
-        # step, before this method gets a chance to add the fleet's per-actor pools. So we re-create source pool manager)
+        # step, before this method gets a chance to add the fleet's per-agent pools. So we re-create source pool manager)
         super()._init_resource_pool_mgr()
 
         # --- fleet: one dedicated pool per unique shared-model group among non-"main" trainable
-        # actors (actors with the same engine_ref collapse onto one pool/worker group), and one
-        # pool per frozen_verl actor. ---
+        # agents (agents with the same engine_ref collapse onto one pool/worker group), and one
+        # pool per frozen_verl agent. ---
         self.fleet_config: MultiAgentFleetConfig = MultiAgentFleetConfig.from_omegaconf(config.multiagent)
         seen_engine_refs: set[str] = set()
-        for actor_id, actor in self.fleet_config.actors.items():
-            if actor.is_main or actor.backend == "external_api":
+        for agent_id, agent in self.fleet_config.agents.items():
+            if agent.is_main or agent.backend == "external_api":
                 continue
-            if actor.backend == "trainable_verl":
+            if agent.backend == "trainable_verl":
                 # each engine group own a separate resource pool (GPU)
-                pool_name = self._get_pool_name(actor.engine_ref)
-                self.mapping[actor_id] = pool_name
+                pool_name = self._get_pool_name(agent.engine_ref)
+                self.mapping[agent_id] = pool_name
                 # skip if already seen
-                if actor.engine_ref in seen_engine_refs:
+                if agent.engine_ref in seen_engine_refs:
                     continue  # pool/worker role already registered for this shared model
-                seen_engine_refs.add(actor.engine_ref)
+                seen_engine_refs.add(agent.engine_ref)
 
-                self.mapping[actor.engine_ref] = pool_name
-                self.resource_pool_manager.resource_pool_spec[pool_name] = [actor.n_gpus_per_node] * actor.nnodes
-                self.role_worker_mapping[actor.engine_ref] = ray.remote(ActorRolloutRefWorker)
+                self.mapping[agent.engine_ref] = pool_name
+                self.resource_pool_manager.resource_pool_spec[pool_name] = [agent.n_gpus_per_node] * agent.nnodes
+                self.role_worker_mapping[agent.engine_ref] = ray.remote(ActorRolloutRefWorker)
             else:
-                # frozen_verl actors are built directly against their own pool in
-                # _setup_actor_groups via FrozenActorManager, bypassing the
+                # frozen_verl agents are built directly against their own pool in
+                # _setup_agent_groups via FrozenAgentManager, bypassing the
                 # RayWorkerGroup/training-engine machinery entirely.
-                pool_name = self._get_pool_name(actor_id) 
-                self.resource_pool_manager.resource_pool_spec[pool_name] = [actor.n_gpus_per_node] * actor.nnodes
-                self.mapping[actor_id] = pool_name
+                pool_name = self._get_pool_name(agent_id)
+                self.resource_pool_manager.resource_pool_spec[pool_name] = [agent.n_gpus_per_node] * agent.nnodes
+                self.mapping[agent_id] = pool_name
 
         # reuse resource_pool_manager initialized from parent class.
         self.resource_pool_manager = ResourcePoolManager(resource_pool_spec=self.resource_pool_manager, mapping=self.mapping)
 
     def _setup(self):
         super()._setup()
-        self._setup_actor_groups()
+        self._setup_agent_groups()
         # PPOTrainer._setup calls self._load_checkpoint() internally, near its own end -- before
-        # _setup_actor_groups (above) has run, so self.engine_groups doesn't exist at that point
+        # _setup_agent_groups (above) has run, so self.engine_groups doesn't exist at that point
         # and fleet checkpoints can't be restored there. Load them explicitly, now that it does.
         self._load_fleet_checkpoint()
 
-    def _setup_actor_groups(self):
+    def _setup_agent_groups(self):
         """Build one resource pool / worker group / ``LLMServerManager`` per unique ``engine_ref``
-        among the fleet's non-main trainable actors. Actors that share a engine_ref are the same
-        model (``MultiAgentFleetConfig._check_shared_engine_groups`` enforces they agree on model
+        among the fleet's non-main trainable agents. Agents that share a engine_ref are the same
+        model (``MultiAgentFleetConfig._check_shared_model_groups`` enforces they agree on model
         config) and must share serving/training resources rather than each getting a dedicated
         copy -- see ``self.mapping``/``self.role_worker_mapping`` built per engine_ref in
         ``_init_resource_pool_mgr``.
         """
-        self.engine_groups: dict[str, ActorGroupHandle] = {}
-        self.actor_groups: dict[str, ActorGroupHandle] = {}
+        self.engine_groups: dict[str, AgentGroupHandle] = {}
+        self.agent_groups: dict[str, AgentGroupHandle] = {}
         wg_kwargs = {"device_name": self.config.trainer.device}
 
-        # extract unique engine_ref from fleet_config.actors. per engine_ref, create a list of actors
-        engine_actors: dict[str, list[ActorConfig]] = {}
-        for actor in self.fleet_config.actors.values():
-            if actor.is_main or actor.backend != "trainable_verl":
+        # extract unique engine_ref from fleet_config.agents. per engine_ref, create a list of agents
+        engine_agents: dict[str, list[AgentConfig]] = {}
+        for agent in self.fleet_config.agents.values():
+            if agent.is_main or agent.backend != "trainable_verl":
                 continue
-            engine_actors.setdefault(actor.engine_ref, []).append(actor)
+            engine_agents.setdefault(agent.engine_ref, []).append(agent)
 
-        for engine_ref, actors in engine_actors.items():
-            representative = actors[0]
-            actor_config = self._actor_specific_config(representative)
+        for engine_ref, agents in engine_agents.items():
+            representative = agents[0]
+            agent_config = self._agent_specific_config(representative)
 
-            # assign 
+            # assign
             resource_pool = self.resource_pool_manager.get_resource_pool(engine_ref)
 
             ray_cls = RayClassWithInitArgs(
                 cls=self.role_worker_mapping[engine_ref],
-                config=actor_config.actor_rollout_ref,
+                config=agent_config.actor_rollout_ref,
                 role="actor_rollout",
             )
             worker_dict_cls = create_colocated_worker_cls(class_dict={engine_ref: ray_cls})
@@ -182,64 +182,64 @@ class MultiAgentPPOTrainer(PPOTrainerSync):
             actor_wg = wg_dict.spawn(prefix_set={engine_ref})[engine_ref]
             actor_wg.init_model()
 
-            # only one LLM server per engine_ref as each actor only differs by system prompt and conversation history
+            # only one LLM server per engine_ref as each agent only differs by system prompt and conversation history
             llm_server_manager: LLMServerManager = LLMServerManager.create(
-                config=actor_config, worker_group=actor_wg, rollout_resource_pool=resource_pool
+                config=agent_config, worker_group=actor_wg, rollout_resource_pool=resource_pool
             )
-            checkpoint_engine_config = omega_conf_to_dataclass(actor_config.actor_rollout_ref.rollout.checkpoint_engine)
+            checkpoint_engine_config = omega_conf_to_dataclass(agent_config.actor_rollout_ref.rollout.checkpoint_engine)
             checkpoint_engine_config.backend = "naive"
             checkpoint_manager = CheckpointEngineManager(
                 config=checkpoint_engine_config, actor_wg=actor_wg, replicas=llm_server_manager.get_replicas()
             )
             checkpoint_manager.sleep_replicas()
 
-            group = ActorGroupHandle(
+            group = AgentGroupHandle(
                 engine_ref=engine_ref,
-                actor_ids=[actor.actor_id for actor in actors],
-                config=actor_config,
+                agent_ids=[agent.agent_id for agent in agents],
+                config=agent_config,
                 actor_wg=actor_wg,
                 llm_server_manager=llm_server_manager,
                 checkpoint_manager=checkpoint_manager,
                 tokenizer=hf_tokenizer(representative.actor_rollout_ref.model.path),
             )
             self.engine_groups[engine_ref] = group
-            for actor in actors:
-                self.actor_groups[actor.actor_id] = group
+            for agent in agents:
+                self.agent_groups[agent.agent_id] = group
             logger.info(
-                f"MultiAgentPPOTrainer: initialized shared model group {engine_ref!r} for actors {group.actor_ids!r}"
+                f"MultiAgentPPOTrainer: initialized shared model group {engine_ref!r} for agents {group.agent_ids!r}"
             )
 
-        self.frozen_actor_manager: FrozenActorManager | None = None
-        if any(a.backend == "frozen_verl" for a in self.fleet_config.actors.values()):
-            self.frozen_actor_manager = FrozenActorManager(
+        self.frozen_agent_manager: FrozenAgentManager | None = None
+        if any(a.backend == "frozen_verl" for a in self.fleet_config.agents.values()):
+            self.frozen_agent_manager = FrozenAgentManager(
                 config=self.config, fleet_config=self.fleet_config, resource_pool_manager=self.resource_pool_manager
             )
 
-    def _actor_specific_config(self, actor: ActorConfig) -> DictConfig:
-        """A clone of the trainer config with ``actor_rollout_ref`` swapped to this actor's own.
+    def _agent_specific_config(self, agent: AgentConfig) -> DictConfig:
+        """A clone of the trainer config with ``actor_rollout_ref`` swapped to this agent's own.
 
         ``LLMServerManager``/``CheckpointEngineManager`` and the six per-group training methods
         all read ``config.actor_rollout_ref.*`` off whatever config object they're given, so each
-        actor group needs its own config object, not the shared ``self.config``.
+        agent group needs its own config object, not the shared ``self.config``.
         """
         cfg = copy.deepcopy(self.config)
-        cfg.actor_rollout_ref = actor.actor_rollout_ref
+        cfg.actor_rollout_ref = agent.actor_rollout_ref
         # rollout.n drives GRPO group size (compute_advantage_for_multi_trajectories groups by
-        # uid across `n` sessions); every fleet actor must agree with main's, since every trainable
-        # actor gets exactly one row per session.
+        # uid across `n` sessions); every fleet agent must agree with main's, since every trainable
+        # agent gets exactly one row per session.
         cfg.actor_rollout_ref.rollout.n = self.config.actor_rollout_ref.rollout.n
         return cfg
 
-    def get_actor_llm_clients(self) -> dict[str, LLMServerClient]:
-        """LLM server clients for every non-"main" fleet actor (trainable_verl and frozen_verl).
+    def get_agent_llm_clients(self) -> dict[str, LLMServerClient]:
+        """LLM server clients for every non-"main" fleet agent (trainable_verl and frozen_verl).
 
-        External-API actors need no client here: ``MultiAgentLoopWorkerTQ`` builds their backend
+        External-API agents need no client here: ``MultiAgentLoopWorkerTQ`` builds their backend
         directly from ``config.multiagent`` inside the worker process.
         """
-        clients = {actor_id: group.llm_server_manager.get_client() for actor_id, group in self.actor_groups.items()}
-        if self.frozen_actor_manager is not None:
-            for actor_id in self.frozen_actor_manager.actor_ids():
-                clients[actor_id] = self.frozen_actor_manager.get_client(actor_id)
+        clients = {agent_id: group.llm_server_manager.get_client() for agent_id, group in self.agent_groups.items()}
+        if self.frozen_agent_manager is not None:
+            for agent_id in self.frozen_agent_manager.agent_ids():
+                clients[agent_id] = self.frozen_agent_manager.get_client(agent_id)
         return clients
 
     # ------------------------------ weight sync across the fleet ------------------------------
@@ -263,7 +263,7 @@ class MultiAgentPPOTrainer(PPOTrainerSync):
     # ------------------------------ per-group training pipeline ------------------------------
 
     @contextmanager
-    def _bind_actor_group(self, engine_ref: str):
+    def _bind_agent_group(self, engine_ref: str):
         """Temporarily rebind the singular training attrs the inherited pipeline methods read.
 
         Must run sequentially, never concurrently across model groups: the six pipeline methods
@@ -284,10 +284,10 @@ class MultiAgentPPOTrainer(PPOTrainerSync):
             self.actor_rollout_wg, self.config, self.tokenizer = prev_wg, prev_config, prev_tokenizer
 
     def _filter_batch_by_engine_ref(self, batch: KVBatchMeta, engine_ref: str) -> KVBatchMeta:
-        """Keep only the rows written by trainable actors sharing this model (tagged via
+        """Keep only the rows written by trainable agents sharing this model (tagged via
         ``AgentLoopOutput.extra_fields["engine_ref"]`` in ``MultiAgentLoop._build_outputs``),
         mirroring the extra_fields-filtering technique ``ReplayBuffer._dapo_filtered_keys``
-        already uses for DAPO metric filtering. Actors that share a engine_ref train together off
+        already uses for DAPO metric filtering. Agents that share a engine_ref train together off
         their combined trajectories, since they're on-policy for the same weights."""
         import transfer_queue as tq
 
@@ -318,9 +318,9 @@ class MultiAgentPPOTrainer(PPOTrainerSync):
                 batch = self._compute_reward_colocate(batch, metrics=metrics)
 
         # One training step per unique model: the trainer's own main model, plus every shared
-        # fleet engine_ref group (each combining trajectories from every actor_id that shares it).
+        # fleet engine_ref group (each combining trajectories from every agent_id that shares it).
         for engine_ref in [self._MAIN_engine_ref, *self.engine_groups]:
-            with self._bind_actor_group(engine_ref):
+            with self._bind_agent_group(engine_ref):
                 group_batch = self._filter_batch_by_engine_ref(batch, engine_ref)
                 if not group_batch.keys:
                     logger.warning(f"No trajectories for model {engine_ref!r} in this step; skipping.")
@@ -351,8 +351,8 @@ class MultiAgentPPOTrainer(PPOTrainerSync):
         step_dir = f"global_step_{self.global_steps}"
         local_global_step_folder = os.path.join(self.config.trainer.default_local_dir, step_dir)
         max_actor_ckpt_to_keep = self.config.trainer.get("max_actor_ckpt_to_keep", None)
-        # Keyed by engine_ref, not actor_id: actors sharing a model share one actor_wg, so saving
-        # once per engine_ref (rather than once per actor_id) avoids redundant duplicate writes.
+        # Keyed by engine_ref, not agent_id: agents sharing a model share one actor_wg, so saving
+        # once per engine_ref (rather than once per agent_id) avoids redundant duplicate writes.
         for engine_ref, group in self.engine_groups.items():
             group.actor_wg.save_checkpoint(
                 os.path.join(local_global_step_folder, engine_ref),
@@ -378,4 +378,4 @@ class MultiAgentPPOTrainer(PPOTrainerSync):
             )
 
 
-__all__ = ["ActorGroupHandle", "MultiAgentPPOTrainer"]
+__all__ = ["AgentGroupHandle", "MultiAgentPPOTrainer"]

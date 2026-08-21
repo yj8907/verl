@@ -1,9 +1,9 @@
-# Two-actor fleet: a trainable "main" solver plus a frozen "oracle" that hints when main's
+# Two-agent fleet: a trainable "main" solver plus a frozen "oracle" that hints when main's
 # attempt looks wrong. See verl/experimental/multiagent/README.md for the full recipe writeup.
 
-actors:
+agents:
   main:
-    actor_id: main
+    agent_id: main
     system_prompt: >-
       You are solving a math word problem. Think step by step, then give a final numeric answer
       on its own line, prefixed with "Answer:".
@@ -11,7 +11,7 @@ actors:
     engine_ref: main
 
   oracle:
-    actor_id: oracle
+    agent_id: oracle
     system_prompt: >-
       You are a math tutor. Read the student's latest attempt. If it looks wrong, give one short
       sentence pointing at the likely mistake without revealing the final answer. If it looks
@@ -28,9 +28,9 @@ actors:
 
 # turn_order's length already equals max_turns, so every episode runs the full
 # solve -> hint -> revise sequence. Early termination (e.g. stopping once main's answer is
-# verified correct) needs an ActorBackend that sets ActorTurnResult.metrics["done"] -- v1's
-# TrainableVerlActorBackend doesn't score correctness mid-episode, only the reward function does
-# (after the episode ends) -- so termination_actor_id is left unset here.
+# verified correct) needs an AgentBackend that sets AgentTurnResult.metrics["done"] -- v1's
+# TrainableVerlAgentBackend doesn't score correctness mid-episode, only the reward function does
+# (after the episode ends) -- so termination_agent_id is left unset here.
 policy:
   kind: rigid_sequence
   turn_order: [main, oracle, main]

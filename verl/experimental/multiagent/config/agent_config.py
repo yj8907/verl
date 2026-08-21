@@ -23,7 +23,7 @@ from verl.base_config import BaseConfig
 from verl.utils.config import omega_conf_to_dataclass
 
 __all__ = [
-    "ActorConfig",
+    "AgentConfig",
     "CommunicationPolicyConfig",
     "ExternalApiConfig",
     "MultiAgentFleetConfig",
@@ -32,12 +32,12 @@ __all__ = [
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
-ActorBackendKind = Literal["trainable_verl", "frozen_verl", "external_api"]
+AgentBackendKind = Literal["trainable_verl", "frozen_verl", "external_api"]
 
 
 @dataclass
 class ExternalApiConfig(BaseConfig):
-    """Configuration for an actor served by an external OpenAI/Anthropic-compatible API.
+    """Configuration for an agent served by an external OpenAI/Anthropic-compatible API.
 
     provider (str):
         "openai" or "anthropic". Defaults to inferring from ``model`` (``claude*`` -> anthropic).
@@ -66,35 +66,35 @@ class ExternalApiConfig(BaseConfig):
 
 
 @dataclass
-class ActorConfig(BaseConfig):
-    """Configuration for one actor role in the fleet.
+class AgentConfig(BaseConfig):
+    """Configuration for one agent role in the fleet.
 
-    actor_id (str):
-        Unique identifier for this actor within the fleet. Must match a key in
-        ``MultiAgentFleetConfig.actors``.
+    agent_id (str):
+        Unique identifier for this agent within the fleet. Must match a key in
+        ``MultiAgentFleetConfig.agents``.
     system_prompt (str):
-        System prompt that defines this actor's role.
+        System prompt that defines this agent's role.
     backend (str):
         "trainable_verl": a verl-managed rollout server whose weights are updated by PPO.
         "frozen_verl": a verl-managed, inference-only rollout server (never trained).
         "external_api": an external OpenAI/Anthropic-compatible endpoint (never trained).
     engine_ref (str):
         "main" reuses the trainer's primary ``actor_rollout_ref`` config and worker group.
-        Any other value must have a matching ``actor_rollout_ref`` sub-config on this actor
-        (for "trainable_verl"/"frozen_verl") and names this actor's own resource pool.
+        Any other value must have a matching ``actor_rollout_ref`` sub-config on this agent
+        (for "trainable_verl"/"frozen_verl") and names this agent's own resource pool.
     actor_rollout_ref (DictConfig, optional):
-        Full ``actor_rollout_ref``-shaped sub-config for this actor's own model. Required for
-        "trainable_verl"/"frozen_verl" actors whose ``engine_ref`` is not "main". Deliberately kept
+        Full ``actor_rollout_ref``-shaped sub-config for this agent's own model. Required for
+        "trainable_verl"/"frozen_verl" agents whose ``engine_ref`` is not "main". Deliberately kept
         as a raw ``DictConfig`` (built by ``from_omegaconf``, not by generic dataclass conversion):
         ``omega_conf_to_dataclass``'s ``OmegaConf.to_object`` step would flatten it into a plain
-        dict, breaking the attribute access (``actor.actor_rollout_ref.model.path``) every
+        dict, breaking the attribute access (``agent.actor_rollout_ref.model.path``) every
         consumer of this field relies on, matching how ``config.actor_rollout_ref`` is used
         everywhere else in the trainer.
     n_gpus_per_node (int):
-        GPUs per node for this actor's dedicated resource pool. Only used when ``engine_ref``
+        GPUs per node for this agent's dedicated resource pool. Only used when ``engine_ref``
         is not "main" and ``backend`` is verl-managed.
     nnodes (int):
-        Nodes for this actor's dedicated resource pool. Only used when ``engine_ref`` is not
+        Nodes for this agent's dedicated resource pool. Only used when ``engine_ref`` is not
         "main" and ``backend`` is verl-managed.
     external_api (ExternalApiConfig, optional):
         Required when ``backend == "external_api"``.
@@ -103,11 +103,11 @@ class ActorConfig(BaseConfig):
 
     _mutable_fields = BaseConfig._mutable_fields | {"actor_rollout_ref"}
 
-    actor_id: str = ""
+    agent_id: str = ""
     engine_ref: str = "main"
 
     system_prompt: str = ""
-    backend: ActorBackendKind = "trainable_verl"
+    backend: AgentBackendKind = "trainable_verl"
     actor_rollout_ref: Optional[DictConfig] = None
     n_gpus_per_node: int = 0
     nnodes: int = 0
@@ -122,12 +122,12 @@ class ActorConfig(BaseConfig):
         return self.engine_ref == "main"
 
     @classmethod
-    def from_omegaconf(cls, actor_id: str, cfg: DictConfig) -> "ActorConfig":
+    def from_omegaconf(cls, agent_id: str, cfg: DictConfig) -> "AgentConfig":
         external_api = None
         if cfg.get("external_api") is not None:
             external_api = omega_conf_to_dataclass(cfg.external_api, dataclass_type=ExternalApiConfig)
         return cls(
-            actor_id=cfg.get("actor_id") or actor_id,
+            agent_id=cfg.get("agent_id") or agent_id,
             system_prompt=cfg.get("system_prompt", ""),
             backend=cfg.get("backend", "trainable_verl"),
             engine_ref=cfg.get("engine_ref", "main"),
@@ -138,26 +138,26 @@ class ActorConfig(BaseConfig):
         )
 
     def check_configured(self) -> None:
-        if not self.actor_id:
-            raise ValueError("ActorConfig.actor_id must be set.")
+        if not self.agent_id:
+            raise ValueError("AgentConfig.agent_id must be set.")
         if self.backend == "external_api":
             if self.external_api is None:
                 raise ValueError(
-                    f"Actor {self.actor_id!r} has backend='external_api' but no external_api config."
+                    f"Agent {self.agent_id!r} has backend='external_api' but no external_api config."
                 )
             if self.is_main:
                 raise ValueError(
-                    f"Actor {self.actor_id!r} is 'main' but backend='external_api'; main must be verl-hosted."
+                    f"Agent {self.agent_id!r} is 'main' but backend='external_api'; main must be verl-hosted."
                 )
         elif not self.is_main:
             if self.actor_rollout_ref is None:
                 raise ValueError(
-                    f"Actor {self.actor_id!r} (backend={self.backend!r}, engine_ref={self.engine_ref!r}) "
+                    f"Agent {self.agent_id!r} (backend={self.backend!r}, engine_ref={self.engine_ref!r}) "
                     "needs its own actor_rollout_ref config."
                 )
             if self.n_gpus_per_node <= 0 or self.nnodes <= 0:
                 raise ValueError(
-                    f"Actor {self.actor_id!r} needs n_gpus_per_node > 0 and nnodes > 0 for its own resource pool."
+                    f"Agent {self.agent_id!r} needs n_gpus_per_node > 0 and nnodes > 0 for its own resource pool."
                 )
 
 
@@ -168,13 +168,13 @@ class CommunicationPolicyConfig(BaseConfig):
     kind (str):
         Which ``CommunicationPolicy`` implementation to use. v1 only ships "rigid_sequence".
     turn_order (list[str]):
-        Actor ids, cycled in order by ``RigidSequencePolicy``.
+        Agent ids, cycled in order by ``RigidSequencePolicy``.
     max_turns (int):
         Hard cap on the number of turns in one episode, regardless of termination.
-    termination_actor_id (str, optional):
-        If set, the episode may end early when this actor's turn result reports done.
+    termination_agent_id (str, optional):
+        If set, the episode may end early when this agent's turn result reports done.
     termination_metric (str):
-        Key read from an ``ActorTurnResult.metrics`` dict to detect early termination.
+        Key read from an ``AgentTurnResult.metrics`` dict to detect early termination.
     """
 
     # str, not Literal: OmegaConf.structured (used by omega_conf_to_dataclass) doesn't support
@@ -182,7 +182,7 @@ class CommunicationPolicyConfig(BaseConfig):
     kind: str = "rigid_sequence"
     turn_order: list[str] = field(default_factory=list)
     max_turns: int = 4
-    termination_actor_id: Optional[str] = None
+    termination_agent_id: Optional[str] = None
     termination_metric: str = "done"
 
     def check_configured(self) -> None:
@@ -194,16 +194,16 @@ class CommunicationPolicyConfig(BaseConfig):
 
 @dataclass
 class MultiAgentFleetConfig(BaseConfig):
-    """Top-level configuration for a multi-agent actor fleet.
+    """Top-level configuration for a multi-agent fleet.
 
-    actors (dict[str, ActorConfig]):
-        Fleet members, keyed by actor_id (the key and ``ActorConfig.actor_id`` must match).
-        Exactly one actor must have ``engine_ref == "main"``.
+    agents (dict[str, AgentConfig]):
+        Fleet members, keyed by agent_id (the key and ``AgentConfig.agent_id`` must match).
+        Exactly one agent must have ``engine_ref == "main"``.
     policy (CommunicationPolicyConfig):
         Turn-taking policy shared by every episode.
     """
 
-    actors: dict[str, ActorConfig] = field(default_factory=dict)
+    agents: dict[str, AgentConfig] = field(default_factory=dict)
     policy: CommunicationPolicyConfig = field(default_factory=CommunicationPolicyConfig)
 
     @classmethod
@@ -211,13 +211,13 @@ class MultiAgentFleetConfig(BaseConfig):
         """Build from the raw ``config.multiagent`` DictConfig.
 
         Doesn't use ``omega_conf_to_dataclass(cfg, dataclass_type=MultiAgentFleetConfig)`` directly:
-        that would route every nested field (including each actor's ``actor_rollout_ref``) through
+        that would route every nested field (including each agent's ``actor_rollout_ref``) through
         ``OmegaConf.structured``/``to_object``, flattening ``actor_rollout_ref`` into a plain dict.
-        See ``ActorConfig.actor_rollout_ref`` docstring.
+        See ``AgentConfig.actor_rollout_ref`` docstring.
         """
-        actors = {
-            actor_id: ActorConfig.from_omegaconf(actor_id, actor_cfg)
-            for actor_id, actor_cfg in cfg.get("actors", {}).items()
+        agents = {
+            agent_id: AgentConfig.from_omegaconf(agent_id, agent_cfg)
+            for agent_id, agent_cfg in cfg.get("agents", {}).items()
         }
         policy_cfg = cfg.get("policy")
         policy = (
@@ -225,58 +225,58 @@ class MultiAgentFleetConfig(BaseConfig):
             if policy_cfg is not None
             else CommunicationPolicyConfig()
         )
-        return cls(actors=actors, policy=policy)
+        return cls(agents=agents, policy=policy)
 
     def __post_init__(self):
-        if not self.actors:
+        if not self.agents:
             return
-        main_actors = [actor_id for actor_id, actor in self.actors.items() if actor.is_main]
-        if len(main_actors) != 1:
+        main_agents = [agent_id for agent_id, agent in self.agents.items() if agent.is_main]
+        if len(main_agents) != 1:
             raise ValueError(
-                f"MultiAgentFleetConfig.actors must contain exactly one engine_ref='main' actor, got {main_actors}."
+                f"MultiAgentFleetConfig.agents must contain exactly one engine_ref='main' agent, got {main_agents}."
             )
-        if not self.actors[main_actors[0]].trainable:
+        if not self.agents[main_agents[0]].trainable:
             # Not just a style preference: MultiAgentLoop only builds an AgentLoopOutput (and
-            # so a trainable TQ row) for trainable actors. A non-trainable main with no other
-            # trainable actor in the fleet would silently produce zero trainable rows per episode.
-            raise ValueError(f"The main actor ({main_actors[0]!r}) must have backend='trainable_verl'.")
-        for actor_id, actor in self.actors.items():
-            if actor.actor_id != actor_id:
-                raise ValueError(f"actors key {actor_id!r} does not match ActorConfig.actor_id {actor.actor_id!r}.")
-            actor.check_configured()
-        for actor_id in self.policy.turn_order:
-            if actor_id not in self.actors:
-                raise ValueError(f"policy.turn_order references unknown actor_id {actor_id!r}.")
+            # so a trainable TQ row) for trainable agents. A non-trainable main with no other
+            # trainable agent in the fleet would silently produce zero trainable rows per episode.
+            raise ValueError(f"The main agent ({main_agents[0]!r}) must have backend='trainable_verl'.")
+        for agent_id, agent in self.agents.items():
+            if agent.agent_id != agent_id:
+                raise ValueError(f"agents key {agent_id!r} does not match AgentConfig.agent_id {agent.agent_id!r}.")
+            agent.check_configured()
+        for agent_id in self.policy.turn_order:
+            if agent_id not in self.agents:
+                raise ValueError(f"policy.turn_order references unknown agent_id {agent_id!r}.")
         self.policy.check_configured()
         self._check_shared_model_groups()
 
     def _check_shared_model_groups(self) -> None:
-        """Trainable actors that share a ``engine_ref`` (other than the solo "main") collapse onto
+        """Trainable agents that share a ``engine_ref`` (other than the solo "main") collapse onto
         one resource pool, worker group, and ``LLMServerManager`` in the trainer -- see
-        ``MultiAgentPPOTrainer._setup_actor_groups`` -- so they must agree on model config.
+        ``MultiAgentPPOTrainer._setup_agent_groups`` -- so they must agree on model config.
         """
-        groups: dict[str, list[ActorConfig]] = {}
-        for actor in self.actors.values():
-            if actor.is_main or actor.backend != "trainable_verl":
+        groups: dict[str, list[AgentConfig]] = {}
+        for agent in self.agents.values():
+            if agent.is_main or agent.backend != "trainable_verl":
                 continue
-            groups.setdefault(actor.engine_ref, []).append(actor)
+            groups.setdefault(agent.engine_ref, []).append(agent)
         for engine_ref, group in groups.items():
             reference = group[0]
             for other in group[1:]:
                 if other.actor_rollout_ref != reference.actor_rollout_ref:
                     raise ValueError(
-                        f"Trainable actors sharing engine_ref={engine_ref!r} must have identical "
-                        f"actor_rollout_ref configs ({reference.actor_id!r} vs {other.actor_id!r})."
+                        f"Trainable agents sharing engine_ref={engine_ref!r} must have identical "
+                        f"actor_rollout_ref configs ({reference.agent_id!r} vs {other.agent_id!r})."
                     )
                 if (other.n_gpus_per_node, other.nnodes) != (reference.n_gpus_per_node, reference.nnodes):
                     raise ValueError(
-                        f"Trainable actors sharing engine_ref={engine_ref!r} must have identical "
-                        f"n_gpus_per_node/nnodes ({reference.actor_id!r} vs {other.actor_id!r})."
+                        f"Trainable agents sharing engine_ref={engine_ref!r} must have identical "
+                        f"n_gpus_per_node/nnodes ({reference.agent_id!r} vs {other.agent_id!r})."
                     )
 
     @property
-    def main_actor_id(self) -> str:
-        return next(actor_id for actor_id, actor in self.actors.items() if actor.is_main)
+    def main_agent_id(self) -> str:
+        return next(agent_id for agent_id, agent in self.agents.items() if agent.is_main)
 
-    def trainable_actor_ids(self) -> list[str]:
-        return [actor_id for actor_id, actor in self.actors.items() if actor.trainable]
+    def trainable_agent_ids(self) -> list[str]:
+        return [agent_id for agent_id, agent in self.agents.items() if agent.trainable]

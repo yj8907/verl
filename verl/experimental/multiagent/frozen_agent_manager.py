@@ -11,14 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""One inference-only, verl-managed rollout server pool per "frozen_verl" fleet actor.
+"""One inference-only, verl-managed rollout server pool per "frozen_verl" fleet agent.
 
 Thin re-parameterization of ``verl.experimental.teacher_loop.teacher_model.TeacherModelManager``
-(reused unmodified) off ``ActorConfig`` instead of ``DistillationTeacherModelConfig``. We don't go
+(reused unmodified) off ``AgentConfig`` instead of ``DistillationTeacherModelConfig``. We don't go
 through ``MultiTeacherModelManager``/``DistillationConfig.__post_init__`` because those apply
 on-policy-distillation-specific rewriting (a frozen teacher does a single-token logprob forward
 pass, so ``validate_and_prepare_for_distillation`` collapses its response_length to 1) that does
-not apply to a frozen fleet actor, which must generate full responses like any other actor.
+not apply to a frozen fleet agent, which must generate full responses like any other agent.
 """
 
 import logging
@@ -26,7 +26,7 @@ import os
 
 from omegaconf import DictConfig
 
-from verl.experimental.multiagent.config.actor_config import MultiAgentFleetConfig
+from verl.experimental.multiagent.config.agent_config import MultiAgentFleetConfig
 from verl.experimental.teacher_loop.teacher_model import TeacherModelManager
 from verl.single_controller.ray import ResourcePoolManager
 from verl.utils.config import omega_conf_to_dataclass
@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
-class FrozenActorManager:
-    """Builds and owns one ``TeacherModelManager`` per "frozen_verl" actor in the fleet."""
+class FrozenAgentManager:
+    """Builds and owns one ``TeacherModelManager`` per "frozen_verl" agent in the fleet."""
 
     def __init__(
         self,
@@ -49,47 +49,47 @@ class FrozenActorManager:
         self.config = config
         self._managers: dict[str, TeacherModelManager] = {}
 
-        for actor_id, actor in fleet_config.actors.items():
-            if actor.backend != "frozen_verl":
+        for agent_id, agent in fleet_config.agents.items():
+            if agent.backend != "frozen_verl":
                 continue
 
             inference_config: RolloutConfig = omega_conf_to_dataclass(
-                actor.actor_rollout_ref.rollout, dataclass_type=RolloutConfig
+                agent.actor_rollout_ref.rollout, dataclass_type=RolloutConfig
             )
             per_replica_world_size = (
                 inference_config.tensor_model_parallel_size
                 * inference_config.data_parallel_size
                 * inference_config.pipeline_model_parallel_size
             )
-            pool_size = actor.n_gpus_per_node * actor.nnodes
+            pool_size = agent.n_gpus_per_node * agent.nnodes
             if pool_size % per_replica_world_size != 0:
                 raise ValueError(
-                    f"Frozen actor {actor_id!r}: per_replica_world_size ({per_replica_world_size}) must "
-                    f"divide its resource pool size ({actor.n_gpus_per_node=} * {actor.nnodes=} = {pool_size})."
+                    f"Frozen agent {agent_id!r}: per_replica_world_size ({per_replica_world_size}) must "
+                    f"divide its resource pool size ({agent.n_gpus_per_node=} * {agent.nnodes=} = {pool_size})."
                 )
 
             teacher_model_config = DistillationTeacherModelConfig(
-                key=actor_id,
-                model_path=actor.actor_rollout_ref.model.path,
+                key=agent_id,
+                model_path=agent.actor_rollout_ref.model.path,
                 inference=inference_config,
                 num_replicas=pool_size // per_replica_world_size,
             )
             # enabled=False short-circuits DistillationConfig.__post_init__'s teacher-specific
             # validation/resolution; only n_gpus_per_node is read by TeacherModelManager itself.
             distillation_config = DistillationConfig(
-                enabled=False, n_gpus_per_node=actor.n_gpus_per_node, nnodes=actor.nnodes
+                enabled=False, n_gpus_per_node=agent.n_gpus_per_node, nnodes=agent.nnodes
             )
-            resource_pool = resource_pool_manager.get_resource_pool(actor_id)
-            self._managers[actor_id] = TeacherModelManager(
+            resource_pool = resource_pool_manager.get_resource_pool(agent_id)
+            self._managers[agent_id] = TeacherModelManager(
                 distillation_config=distillation_config,
                 teacher_model_config=teacher_model_config,
                 resource_pool=resource_pool,
             )
-            logger.info(f"FrozenActorManager: initialized rollout servers for actor {actor_id!r}")
+            logger.info(f"FrozenAgentManager: initialized rollout servers for agent {agent_id!r}")
 
-    def actor_ids(self) -> list[str]:
+    def agent_ids(self) -> list[str]:
         return list(self._managers)
 
-    def get_client(self, actor_id: str) -> LLMServerClient:
-        manager = self._managers[actor_id]
+    def get_client(self, agent_id: str) -> LLMServerClient:
+        manager = self._managers[agent_id]
         return LLMServerClient(config=self.config, load_balancer_handle=manager.load_balancer_handle)

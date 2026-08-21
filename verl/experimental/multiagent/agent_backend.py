@@ -11,15 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Uniform async interface for one actor's turn generation, with three backends:
+"""Uniform async interface for one agent's turn generation, with three backends:
 
-- ``TrainableVerlActorBackend``: a verl-managed rollout server whose weights PPO updates.
-- ``FrozenVerlActorBackend``: a verl-managed, inference-only rollout server.
-- ``ExternalAPIActorBackend``: an external OpenAI/Anthropic-compatible endpoint.
+- ``TrainableVerlAgentBackend``: a verl-managed rollout server whose weights PPO updates.
+- ``FrozenVerlAgentBackend``: a verl-managed, inference-only rollout server.
+- ``ExternalAPIAgentBackend``: an external OpenAI/Anthropic-compatible endpoint.
 
 Both verl-managed backends return token ids (needed to build a trainable ``AgentLoopOutput``
-for ``trainable=True`` actors, and to let observing actors re-tokenize what a frozen verl actor
-said). The external backend returns text only: it is never trained, and other actors re-tokenize
+for ``trainable=True`` agents, and to let observing agents re-tokenize what a frozen verl agent
+said). The external backend returns text only: it is never trained, and other agents re-tokenize
 its text into their own context using their own tokenizer.
 """
 
@@ -33,7 +33,7 @@ from uuid import uuid4
 
 from transformers import PreTrainedTokenizerBase
 
-from verl.experimental.multiagent.config.actor_config import ExternalApiConfig
+from verl.experimental.multiagent.config.agent_config import ExternalApiConfig
 from verl.utils.tokenizer.chat_template import apply_chat_template
 from verl.workers.rollout.llm_server import LLMServerClient
 
@@ -42,23 +42,23 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
 @dataclass
-class ActorTurnResult:
-    """Result of one actor's turn."""
+class AgentTurnResult:
+    """Result of one agent's turn."""
 
     text: str
-    """Decoded text of the turn, always populated (used to render the turn into other actors' context)."""
+    """Decoded text of the turn, always populated (used to render the turn into other agents' context)."""
     response_token_ids: Optional[list[int]] = None
-    """Token ids generated for this turn, in this actor's own tokenizer. None for external_api actors."""
+    """Token ids generated for this turn, in this agent's own tokenizer. None for external_api agents."""
     response_logprobs: Optional[list[float]] = None
     """Per-token log probs aligned with ``response_token_ids``, if the backend returns them."""
     trainable: bool = False
-    """Whether this turn came from a trainable actor (only trainable turns get a TQ row)."""
+    """Whether this turn came from a trainable agent (only trainable turns get a TQ row)."""
     metrics: dict[str, Any] = field(default_factory=dict)
     """Backend/turn metadata, e.g. {"done": True} used by termination checks."""
 
 
-class ActorBackend(ABC):
-    """Uniform interface an actor's model is accessed through, regardless of how it's served."""
+class AgentBackend(ABC):
+    """Uniform interface an agent's model is accessed through, regardless of how it's served."""
 
     trainable: bool = False
 
@@ -68,23 +68,23 @@ class ActorBackend(ABC):
         messages: list[dict],
         system_prompt: str,
         sampling_params: dict[str, Any],
-    ) -> ActorTurnResult:
-        """Generate this actor's next turn given the conversation so far.
+    ) -> AgentTurnResult:
+        """Generate this agent's next turn given the conversation so far.
 
         Args:
-            messages: Chat-format message history visible to this actor (may be a subset/rendering
+            messages: Chat-format message history visible to this agent (may be a subset/rendering
                 of the full episode, depending on the caller).
-            system_prompt: This actor's own system prompt.
+            system_prompt: This agent's own system prompt.
             sampling_params: Sampling parameters for generation.
         """
         raise NotImplementedError
 
 
-class _VerlActorBackendBase(ActorBackend):
-    """Shared ``LLMServerClient``-based generation logic for verl-managed actors."""
+class _VerlAgentBackendBase(AgentBackend):
+    """Shared ``LLMServerClient``-based generation logic for verl-managed agents."""
 
-    def __init__(self, actor_id: str, client: LLMServerClient, tokenizer: PreTrainedTokenizerBase):
-        self.actor_id = actor_id
+    def __init__(self, agent_id: str, client: LLMServerClient, tokenizer: PreTrainedTokenizerBase):
+        self.agent_id = agent_id
         self.client = client
         self.tokenizer = tokenizer
 
@@ -93,7 +93,7 @@ class _VerlActorBackendBase(ActorBackend):
         messages: list[dict],
         system_prompt: str,
         sampling_params: dict[str, Any],
-    ) -> ActorTurnResult:
+    ) -> AgentTurnResult:
         full_messages = ([{"role": "system", "content": system_prompt}] if system_prompt else []) + list(messages)
         prompt_ids = apply_chat_template(
             self.tokenizer,
@@ -109,7 +109,7 @@ class _VerlActorBackendBase(ActorBackend):
         response_token_ids = list(output.token_ids)
         text = self.tokenizer.decode(response_token_ids, skip_special_tokens=True)
         response_logprobs = list(output.log_probs) if getattr(output, "log_probs", None) is not None else None
-        return ActorTurnResult(
+        return AgentTurnResult(
             text=text,
             response_token_ids=response_token_ids,
             response_logprobs=response_logprobs,
@@ -118,19 +118,19 @@ class _VerlActorBackendBase(ActorBackend):
         )
 
 
-class TrainableVerlActorBackend(_VerlActorBackendBase):
+class TrainableVerlAgentBackend(_VerlAgentBackendBase):
     """A verl-managed rollout server whose weights are updated by PPO."""
 
     trainable = True
 
 
-class FrozenVerlActorBackend(_VerlActorBackendBase):
+class FrozenVerlAgentBackend(_VerlAgentBackendBase):
     """A verl-managed, inference-only rollout server (never trained)."""
 
     trainable = False
 
 
-class ExternalAPIActorBackend(ActorBackend):
+class ExternalAPIAgentBackend(AgentBackend):
     """An external OpenAI/Anthropic-compatible endpoint, never trained.
 
     Bounds concurrency and applies a per-call timeout + retry/backoff so a slow or
@@ -140,8 +140,8 @@ class ExternalAPIActorBackend(ActorBackend):
 
     trainable = False
 
-    def __init__(self, actor_id: str, config: ExternalApiConfig):
-        self.actor_id = actor_id
+    def __init__(self, agent_id: str, config: ExternalApiConfig):
+        self.agent_id = agent_id
         self.config = config
         self.provider = config.provider or ("anthropic" if config.model.startswith("claude") else "openai")
         self._semaphore = asyncio.Semaphore(config.max_concurrency)
@@ -162,11 +162,11 @@ class ExternalAPIActorBackend(ActorBackend):
         messages: list[dict],
         system_prompt: str,
         sampling_params: dict[str, Any],
-    ) -> ActorTurnResult:
+    ) -> AgentTurnResult:
         temperature = sampling_params.get("temperature")
         async with self._semaphore:
             text = await self._call_with_retry(messages, system_prompt, temperature)
-        return ActorTurnResult(text=text, trainable=False, metrics={})
+        return AgentTurnResult(text=text, trainable=False, metrics={})
 
     async def _call_with_retry(
         self, messages: list[dict], system_prompt: str, temperature: Optional[float]
@@ -183,12 +183,12 @@ class ExternalAPIActorBackend(ActorBackend):
                 if attempt < self.config.max_retries:
                     backoff_s = 2**attempt
                     logger.warning(
-                        f"External actor {self.actor_id!r} call failed (attempt {attempt + 1}/"
+                        f"External agent {self.agent_id!r} call failed (attempt {attempt + 1}/"
                         f"{self.config.max_retries + 1}), retrying in {backoff_s}s: {e}"
                     )
                     await asyncio.sleep(backoff_s)
         raise RuntimeError(
-            f"External actor {self.actor_id!r} failed after {self.config.max_retries + 1} attempts"
+            f"External agent {self.agent_id!r} failed after {self.config.max_retries + 1} attempts"
         ) from last_error
 
     async def _call_once(self, messages: list[dict], system_prompt: str, temperature: Optional[float]) -> str:

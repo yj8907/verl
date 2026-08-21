@@ -3,16 +3,16 @@ set -xeuo pipefail
 
 # Multi-agent fleet PPO: a trainable "main" solver plus a frozen "oracle" (external OpenAI-
 # compatible API) that hints when main's attempt looks wrong. See
-# verl/experimental/multiagent/config/actor_fleet/math_teacher_student.yaml for the fleet
+# verl/experimental/multiagent/config/agent_fleet/math_teacher_student.yaml for the fleet
 # definition and verl/experimental/multiagent/README.md for the full writeup.
 #
 # Prepare data first, e.g.:
 #   python3 examples/data_preprocess/gsm8k.py --local_save_dir ~/data/gsm8k
 #
 # Requires OPENAI_API_KEY (or ANTHROPIC_API_KEY, if you switch the oracle's provider in the
-# actor_fleet config) in the environment for the oracle actor.
+# agent_fleet config) in the environment for the oracle agent.
 
-: "${OPENAI_API_KEY:?Set OPENAI_API_KEY for the oracle actor}"
+: "${OPENAI_API_KEY:?Set OPENAI_API_KEY for the oracle agent}"
 
 project_name='multiagent'
 exp_name='math-teacher-student-qwen2.5-0.5b'

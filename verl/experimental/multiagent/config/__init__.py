@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from verl.experimental.multiagent.config.actor_config import (
-    ActorConfig,
+from verl.experimental.multiagent.config.agent_config import (
+    AgentConfig,
     CommunicationPolicyConfig,
     ExternalApiConfig,
     MultiAgentFleetConfig,
 )
 
 __all__ = [
-    "ActorConfig",
+    "AgentConfig",
     "CommunicationPolicyConfig",
     "ExternalApiConfig",
     "MultiAgentFleetConfig",
